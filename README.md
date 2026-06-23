@@ -1,2 +1,131 @@
 # one-agent
-one agent access to any agent
+
+**One entry, any agent.** Drive and orchestrate any local coding agent — Claude
+Code, Codex, and anything that speaks the Agent Client Protocol (ACP) — from a
+single entrypoint. Pick a directory, describe what you want, and let one-agent
+route the work, manage sessions, and let agents delegate to each other under
+rules *you* define.
+
+> Status: early foundation (v0.1). The core, adapters, delegation, and session
+> management are in place and runnable. See [Roadmap](#roadmap).
+
+## Why
+
+You may have several coding agents installed — Claude Code CLI, Codex CLI, and
+more. Instead of choosing one each time, one-agent gives you a single flow
+("select a directory, start coding") and decides — or lets the agents decide —
+who does what, governed by a spec you write.
+
+## How it calls agents
+
+one-agent talks to each backend through a normalized `AgentAdapter`, using each
+tool's documented headless interface:
+
+| Backend | Mechanism |
+| --- | --- |
+| **Claude Code** | `claude -p --input-format stream-json --output-format stream-json` — prompt in / event stream out over stdio. |
+| **Codex** | `codex exec --json --sandbox <mode>` — headless run, tolerant JSON event parsing. |
+| **Any ACP agent** | JSON-RPC 2.0 over stdio (`initialize` → `session/new` → `session/prompt`), translating `session/update` notifications. The long-tail, future-proof path. |
+
+Adding a backend means writing one adapter; nothing else changes.
+
+## Architecture
+
+The core is **interface-agnostic** — the CLI is a thin frontend, and a desktop
+app can later reuse the exact same core.
+
+```
+src/
+  core/          # interface-agnostic library (no CLI imports)
+    types.ts         normalized events, runs, permission modes
+    adapter.ts       the AgentAdapter contract
+    registry.ts      adapters + per-agent detection
+    spec.ts          the user-defined orchestration spec (YAML + zod)
+    orchestrator.ts  routing, delegation policy, session recording
+    session-store.ts persistent requests (需求) and their runs
+  adapters/      # claude-code, codex, acp + process utils
+  mcp/           # the delegation MCP server (agent-spawns-agent backbone)
+  cli/           # commands, interactive session, rendering
+```
+
+## The spec — your orchestration rules
+
+The spec is the heart of one-agent: you declare which agents exist, their roles,
+who may delegate to whom, and how recursion is bounded. Generate one with
+`one-agent init`:
+
+```yaml
+version: 1
+defaultAgent: claude-code
+agents:
+  claude-code:
+    type: claude-code
+    permissionMode: acceptEdits
+    role: General-purpose coding, repo-wide reasoning and refactors.
+    canDelegateTo: [codex]
+  codex:
+    type: codex
+    role: Fast focused edits and an independent second opinion.
+    canDelegateTo: [claude-code]
+routing:
+  auto: false        # set true to auto-pick an agent from rules
+  rules: []
+delegation:
+  enabled: true
+  maxDepth: 2        # cap agent -> agent recursion
+  audit: true
+```
+
+## Agents spawning agents
+
+When an agent runs and the spec permits delegation, one-agent injects its own
+**MCP server** into that agent. The agent then has `list_agents` and
+`spawn_agent` tools. Every `spawn_agent` call is re-checked against the spec
+(allowed target? within `maxDepth`?) before a sub-agent is launched. This is how
+"an agent decides to launch another agent" stays governed by your rules.
+
+## Session management
+
+A **request (需求)** is one top-level task. Driving it may start several backend
+sessions across agents — including delegated ones. one-agent records each as a
+**run** linked to the request, so you can browse past requests and see exactly
+which agent ran which session and who delegated to whom.
+
+```
+one-agent requests          # list past 需求
+one-agent show <id>         # full per-agent session breakdown for a request
+```
+
+Storage is a directory of small JSON files under `~/.one-agent` (override with
+`ONE_AGENT_HOME`); each process writes only its own run files, so delegated
+sub-agents in separate processes record into the same request safely.
+
+## Usage
+
+```bash
+npm install
+npm run build
+
+node dist/cli/index.js init          # write a starter one-agent.yaml
+node dist/cli/index.js agents        # which agents are available locally
+node dist/cli/index.js               # interactive: pick dir, start a request
+node dist/cli/index.js run "fix the failing test" -a codex
+node dist/cli/index.js requests      # review past requests
+node dist/cli/index.js show <id>     # see what one request spawned
+```
+
+In a dev checkout, use `npm run dev -- <args>` (via `tsx`) instead of building.
+
+## Roadmap
+
+- [ ] Auto-routing from spec rules / model-assisted routing
+- [ ] Rich permission handling (interactive approval via MCP permission tools)
+- [ ] ACP client `fs/*` methods and full permission flow
+- [ ] Codex `app_server` backend (drive a running Codex app)
+- [ ] Desktop app frontend reusing the core
+- [ ] Live transcript persistence per run (not just summaries)
+
+## Acknowledgements
+
+Invocation approaches informed by [cc-connect](https://github.com/chenhg5/cc-connect),
+which bridges many local agents (native adapters + generic ACP).
