@@ -121,7 +121,7 @@ export class Orchestrator {
         }
         yield event;
       }
-      await this.finish(record, 'done', collected.join(''));
+      await this.finish(record, hooks.signal?.aborted ? 'cancelled' : 'done', collected.join(''));
     } catch (err) {
       await this.finish(record, 'error', String(err));
       throw err;
@@ -154,7 +154,7 @@ export class Orchestrator {
 
   private async finish(
     record: RunRecord | undefined,
-    status: 'done' | 'error',
+    status: 'done' | 'error' | 'cancelled',
     output: string,
   ): Promise<void> {
     if (!record || !this.options.store) return;

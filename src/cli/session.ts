@@ -44,11 +44,26 @@ export async function interactiveSession(
     ui.dim(`available: ${available.join(', ')}  ·  active: `) + ui.label(active) + '\n',
   );
   stdout.write(
-    ui.dim('commands: /agent <id> switch · /agents list · /quit exit · anything else = a request\n\n'),
+    ui.dim(
+      'commands: /agent <id> switch · /agents list · /quit exit\n' +
+        'Ctrl-C interrupts the running request (it does not exit). anything else = a request\n\n',
+    ),
   );
 
   const rl = createInterface({ input: stdin, output: stdout });
   let current = active;
+
+  // Ctrl-C cancels the in-flight request without tearing down the session.
+  let activeRun: AbortController | null = null;
+  rl.on('SIGINT', () => {
+    if (activeRun) {
+      activeRun.abort();
+      stdout.write(ui.warn('\n⊘ interrupting current request…\n'));
+    } else {
+      stdout.write(ui.dim('\n(type /quit to exit)\n'));
+    }
+  });
+
   try {
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -69,14 +84,17 @@ export async function interactiveSession(
         }
         continue;
       }
-      // Pause the prompt while the agent runs so streamed output is clean.
-      rl.pause();
-      await executeRequest(boot.orchestrator, boot.store, {
-        prompt: line,
-        cwd: opts.cwd,
-        agentId: current,
-      });
-      rl.resume();
+      activeRun = new AbortController();
+      try {
+        await executeRequest(boot.orchestrator, boot.store, {
+          prompt: line,
+          cwd: opts.cwd,
+          agentId: current,
+          signal: activeRun.signal,
+        });
+      } finally {
+        activeRun = null;
+      }
     }
   } finally {
     rl.close();

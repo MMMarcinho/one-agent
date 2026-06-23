@@ -8,7 +8,7 @@ import type {
   RunHooks,
   RunRequest,
 } from '../core/types.js';
-import { captureOutput, readLines, which } from './process-util.js';
+import { captureOutput, killOnAbort, readLines, which } from './process-util.js';
 
 /**
  * Drives the Codex CLI in headless mode:
@@ -37,7 +37,7 @@ export class CodexAdapter implements AgentAdapter {
   async *run(
     descriptor: AgentDescriptor,
     request: RunRequest,
-    _hooks: RunHooks,
+    hooks: RunHooks,
   ): AsyncIterable<AgentEvent> {
     const args = buildArgs(descriptor, request);
     const child = spawn(descriptor.command, args, {
@@ -45,6 +45,7 @@ export class CodexAdapter implements AgentAdapter {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ...descriptor.env },
     });
+    killOnAbort(hooks.signal, child);
 
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d.toString()));

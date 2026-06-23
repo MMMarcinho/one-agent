@@ -11,7 +11,13 @@ import { renderEvent, ui } from './render.js';
 export async function executeRequest(
   orchestrator: Orchestrator,
   store: SessionStore,
-  opts: { prompt: string; cwd: string; agentId?: string; mode?: PermissionMode },
+  opts: {
+    prompt: string;
+    cwd: string;
+    agentId?: string;
+    mode?: PermissionMode;
+    signal?: AbortSignal;
+  },
 ): Promise<void> {
   const agentId = orchestrator.route({
     agentId: opts.agentId,
@@ -33,11 +39,14 @@ export async function executeRequest(
       permissionMode: opts.mode,
       requestId: request.id,
     },
-    {},
+    { signal: opts.signal },
   )) {
     if (!renderEvent(event, agentId)) fatal = true;
   }
 
+  if (opts.signal?.aborted) {
+    process.stdout.write(ui.warn('\n⊘ request interrupted.\n'));
+  }
   await printSessionBreakdown(store, request.id, !fatal);
 }
 
@@ -55,7 +64,13 @@ export async function printSessionBreakdown(
     const via = run.depth === 0 ? 'user' : `via ${run.parent}`;
     const sid = run.sessionId ? run.sessionId.slice(0, 8) : '—';
     const mark =
-      run.status === 'done' ? ui.ok('✓') : run.status === 'error' ? ui.err('✗') : '·';
+      run.status === 'done'
+        ? ui.ok('✓')
+        : run.status === 'error'
+          ? ui.err('✗')
+          : run.status === 'cancelled'
+            ? ui.warn('⊘')
+            : '·';
     process.stdout.write(
       `${indent}${mark} ${ui.label(run.agentId)} ${ui.dim(`[${via}]`)} ${ui.dim('session ' + sid)}\n`,
     );

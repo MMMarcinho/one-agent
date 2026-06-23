@@ -84,6 +84,45 @@ test('routing falls back to the default agent', async () => {
   assert.equal(orch.route({ agentId: 'codex', prompt: 'x', cwd: '/x' }), 'codex');
 });
 
+/** An adapter that blocks until the run is aborted. */
+class SlowAdapter implements AgentAdapter {
+  readonly type = 'claude-code';
+  async detect(): Promise<DetectResult> {
+    return { available: true };
+  }
+  async *run(_d: unknown, _r: unknown, hooks: { signal?: AbortSignal }): AsyncIterable<AgentEvent> {
+    yield { kind: 'session', sessionId: 'slow-1' };
+    yield { kind: 'assistant', text: 'working…' };
+    await new Promise<void>((res) => {
+      if (hooks.signal?.aborted) return res();
+      hooks.signal?.addEventListener('abort', () => res(), { once: true });
+    });
+    yield { kind: 'done' };
+  }
+}
+
+test('Ctrl-C / abort cancels a run and records it as cancelled', async () => {
+  const spec = builtinSpec();
+  const registry = new AgentRegistry().register(new SlowAdapter());
+  const store = new SessionStore(await mkdtemp(join(tmpdir(), 'oa-')));
+  const orch = new Orchestrator(spec, registry, { store });
+
+  const req = await store.createRequest({ prompt: 'long task', cwd: '/repo' });
+  const controller = new AbortController();
+  const seen: AgentEvent[] = [];
+  for await (const e of orch.run(
+    { agentId: 'claude-code', cwd: '/repo', prompt: 'long task', requestId: req.id },
+    { signal: controller.signal },
+  )) {
+    seen.push(e);
+    if (e.kind === 'assistant') controller.abort(); // simulate Ctrl-C mid-run
+  }
+
+  assert.ok(seen.some((e) => e.kind === 'done'));
+  const runs = await store.runsFor(req.id);
+  assert.equal(runs[0].status, 'cancelled');
+});
+
 test('buildConvention surfaces the delegation roster plus user conventions', async () => {
   const { registry } = fixture();
   void registry;

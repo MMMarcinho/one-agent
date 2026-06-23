@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-export type RunStatus = 'running' | 'done' | 'error';
+export type RunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
 export interface RequestRecord {
   id: string;
