@@ -92,6 +92,10 @@ function buildArgs(descriptor: AgentDescriptor, request: RunRequest): string[] {
 
   if (request.resumeSessionId) args.push('--resume', request.resumeSessionId);
 
+  if (request.systemConvention) {
+    args.push('--append-system-prompt', request.systemConvention);
+  }
+
   const mcp = mcpConfig(request.mcpServers);
   if (mcp) args.push('--mcp-config', mcp, '--strict-mcp-config');
 

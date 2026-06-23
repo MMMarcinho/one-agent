@@ -84,6 +84,17 @@ When an agent runs and the spec permits delegation, one-agent injects its own
 (allowed target? within `maxDepth`?) before a sub-agent is launched. This is how
 "an agent decides to launch another agent" stays governed by your rules.
 
+### Telling agents *when* to delegate — `ONE_AGENT.md`
+
+The spec grants the *capability*; a CLAUDE.md-style **`ONE_AGENT.md`** file
+supplies the *convention*. Write, in plain language, when each agent should hand
+off to which other agent. one-agent loads it and injects it into **every** agent
+it launches (as an appended system prompt for Claude Code, and a framed preamble
+for Codex / ACP agents), so the same convention reaches every backend regardless
+of its own memory-file support. Each injected context also includes an
+auto-generated roster of the agent's permitted delegation targets and their
+roles. `one-agent init` scaffolds a starter `ONE_AGENT.md`.
+
 ## Session management
 
 A **request (需求)** is one top-level task. Driving it may start several backend

@@ -36,6 +36,8 @@ export const specSchema = z.object({
   version: z.literal(1),
   /** Agent used when no rule matches and the user doesn't pick one. */
   defaultAgent: z.string(),
+  /** Override the conventions file path (default: ONE_AGENT.md, auto-discovered). */
+  conventionsFile: z.string().optional(),
   agents: z.record(agentSpec),
   routing: z
     .object({

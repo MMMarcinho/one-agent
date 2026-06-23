@@ -18,6 +18,9 @@ export async function interactiveSession(
 
   stdout.write(ui.banner() + '\n');
   stdout.write(ui.dim(`directory: ${opts.cwd}\n`));
+  if (boot.conventionsPath) {
+    stdout.write(ui.dim(`conventions: ${boot.conventionsPath}\n`));
+  }
   if (boot.usingBuiltin) {
     stdout.write(ui.warn('no one-agent.yaml found — using built-in defaults. ') + ui.dim('Run `one-agent init` to customize.\n'));
   }

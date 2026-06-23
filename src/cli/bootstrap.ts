@@ -1,4 +1,5 @@
 import { registerBuiltinAdapters } from '../adapters/index.js';
+import { findConventionsPath, loadConventions } from '../core/conventions.js';
 import { Orchestrator } from '../core/orchestrator.js';
 import { AgentRegistry } from '../core/registry.js';
 import { SessionStore } from '../core/session-store.js';
@@ -7,6 +8,7 @@ import { builtinSpec, findSpecPath, loadSpec, type Spec } from '../core/spec.js'
 export interface Bootstrapped {
   spec: Spec;
   specPath?: string;
+  conventionsPath?: string;
   registry: AgentRegistry;
   orchestrator: Orchestrator;
   store: SessionStore;
@@ -27,8 +29,16 @@ export async function bootstrap(startDir: string): Promise<Bootstrapped> {
     spec = builtinSpec();
     usingBuiltin = true;
   }
+  const conventionsPath = findConventionsPath(startDir, spec.conventionsFile);
+  const conventions = conventionsPath ? await loadConventions(conventionsPath) : undefined;
+
   const registry = registerBuiltinAdapters(new AgentRegistry());
   const store = new SessionStore();
-  const orchestrator = new Orchestrator(spec, registry, { specPath, store });
-  return { spec, specPath, registry, orchestrator, store, usingBuiltin };
+  const orchestrator = new Orchestrator(spec, registry, {
+    specPath,
+    store,
+    conventions,
+    conventionsPath,
+  });
+  return { spec, specPath, conventionsPath, registry, orchestrator, store, usingBuiltin };
 }

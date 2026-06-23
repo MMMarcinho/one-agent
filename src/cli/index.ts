@@ -8,6 +8,7 @@ import { interactiveSession } from './session.js';
 import { executeRequest, printSessionBreakdown } from './run.js';
 import { ui } from './render.js';
 import { EXAMPLE_SPEC } from './example-spec.js';
+import { EXAMPLE_CONVENTIONS } from '../core/conventions.js';
 import type { PermissionMode } from '../core/types.js';
 
 const program = new Command();
@@ -116,18 +117,21 @@ program
 
 program
   .command('init')
-  .description('Write an example one-agent.yaml spec to the current directory.')
+  .description('Write a starter one-agent.yaml spec and ONE_AGENT.md conventions file.')
   .option('-C, --cwd <dir>', 'directory to write into', process.cwd())
   .action(async (opts) => {
-    const path = resolve(opts.cwd, 'one-agent.yaml');
-    if (existsSync(path)) {
-      process.stderr.write(ui.warn(`one-agent.yaml already exists at ${path}\n`));
-      process.exitCode = 1;
-      return;
-    }
-    await writeFile(path, EXAMPLE_SPEC);
-    process.stdout.write(ui.ok(`wrote ${path}\n`));
+    await writeIfAbsent(resolve(opts.cwd, 'one-agent.yaml'), EXAMPLE_SPEC);
+    await writeIfAbsent(resolve(opts.cwd, 'ONE_AGENT.md'), EXAMPLE_CONVENTIONS);
   });
+
+async function writeIfAbsent(path: string, content: string): Promise<void> {
+  if (existsSync(path)) {
+    process.stdout.write(ui.warn(`skip (exists): ${path}\n`));
+    return;
+  }
+  await writeFile(path, content);
+  process.stdout.write(ui.ok(`wrote ${path}\n`));
+}
 
 program
   .command('mcp')

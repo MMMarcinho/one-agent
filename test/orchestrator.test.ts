@@ -83,3 +83,24 @@ test('routing falls back to the default agent', async () => {
   assert.equal(orch.route({ prompt: 'anything', cwd: '/x' }), 'claude-code');
   assert.equal(orch.route({ agentId: 'codex', prompt: 'x', cwd: '/x' }), 'codex');
 });
+
+test('buildConvention surfaces the delegation roster plus user conventions', async () => {
+  const { registry } = fixture();
+  void registry;
+  const { buildConvention } = await import('../src/core/conventions.js');
+  const spec = builtinSpec();
+  const descriptor = {
+    id: 'claude-code',
+    type: 'claude-code' as const,
+    command: 'claude',
+    canDelegateTo: ['codex'],
+  };
+  const text = buildConvention(spec, descriptor, 'Delegate tests to codex.');
+  assert.ok(text && text.includes('spawn_agent'));
+  assert.ok(text!.includes('`codex`'));
+  assert.ok(text!.includes('Delegate tests to codex.'));
+
+  // No targets => no orchestration header; only user text if present.
+  const none = buildConvention(spec, { ...descriptor, canDelegateTo: [] }, undefined);
+  assert.equal(none, undefined);
+});

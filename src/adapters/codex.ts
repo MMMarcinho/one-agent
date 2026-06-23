@@ -85,9 +85,15 @@ function buildArgs(descriptor: AgentDescriptor, request: RunRequest): string[] {
 
   if (descriptor.args) args.push(...descriptor.args);
 
-  // Prompt is the trailing positional argument.
-  args.push(request.prompt);
+  // Codex exec has no append-system-prompt flag, so fold the orchestration
+  // conventions into a framed preamble ahead of the task. Prompt is positional.
+  args.push(withConvention(request.prompt, request.systemConvention));
   return args;
+}
+
+function withConvention(prompt: string, convention?: string): string {
+  if (!convention) return prompt;
+  return `<orchestration-context>\n${convention}\n</orchestration-context>\n\n${prompt}`;
 }
 
 function sandboxFor(mode: PermissionMode): string {

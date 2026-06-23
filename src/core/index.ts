@@ -5,6 +5,13 @@ export * from './registry.js';
 export * from './orchestrator.js';
 export * from './session-store.js';
 export {
+  findConventionsPath,
+  loadConventions,
+  buildConvention,
+  CONVENTION_FILENAMES,
+  EXAMPLE_CONVENTIONS,
+} from './conventions.js';
+export {
   loadSpec,
   findSpecPath,
   builtinSpec,

@@ -67,6 +67,12 @@ export interface RunRequest {
    * spawn other agents within the policy.
    */
   mcpServers?: McpServerConfig[];
+  /**
+   * Orchestration guidance injected into the agent as appended system context:
+   * the auto-generated delegation roster plus the user's ONE_AGENT.md
+   * conventions. Tells the agent when it is recommended to delegate to whom.
+   */
+  systemConvention?: string;
 }
 
 /** A stdio MCP server definition injected into a backend at launch. */

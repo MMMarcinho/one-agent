@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { readFile } from 'node:fs/promises';
 import { registerBuiltinAdapters } from '../adapters/index.js';
 import { Orchestrator } from '../core/orchestrator.js';
 import { AgentRegistry } from '../core/registry.js';
@@ -20,9 +21,13 @@ export async function startDelegationServer(): Promise<void> {
   const spec = await resolveSpec();
   const registry = registerBuiltinAdapters(new AgentRegistry());
   const store = new SessionStore();
+  const conventionsPath = process.env.ONE_AGENT_CONVENTIONS;
+  const conventions = conventionsPath ? await safeLoad(conventionsPath) : undefined;
   const orchestrator = new Orchestrator(spec, registry, {
     specPath: process.env.ONE_AGENT_SPEC,
     store,
+    conventions,
+    conventionsPath,
   });
 
   const server = new McpServer({ name: 'one-agent', version: '0.1.0' });
@@ -109,6 +114,14 @@ function readContext(): DelegationCtx {
     requestId: process.env.ONE_AGENT_REQUEST,
     cwd: process.env.ONE_AGENT_CWD,
   };
+}
+
+async function safeLoad(path: string): Promise<string | undefined> {
+  try {
+    return (await readFile(path, 'utf8')).trim();
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveSpec(): Promise<Spec> {

@@ -58,9 +58,12 @@ export class AcpAdapter implements AgentAdapter {
         })) as { sessionId?: string };
         if (session.sessionId) queue.push({ kind: 'session', sessionId: session.sessionId });
 
+        const promptText = request.systemConvention
+          ? `<orchestration-context>\n${request.systemConvention}\n</orchestration-context>\n\n${request.prompt}`
+          : request.prompt;
         const result = (await conn.request('session/prompt', {
           sessionId: session.sessionId,
-          prompt: [{ type: 'text', text: request.prompt }],
+          prompt: [{ type: 'text', text: promptText }],
         })) as { stopReason?: string };
         queue.push({ kind: 'done', result: result.stopReason });
       } catch (err) {

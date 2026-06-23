@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { buildConvention } from './conventions.js';
 import type { AgentRegistry } from './registry.js';
 import type { SessionStore, RunRecord } from './session-store.js';
 import type { Spec } from './spec.js';
@@ -18,6 +19,10 @@ export interface OrchestratorOptions {
   delegationArgs?: string[];
   /** Records requests/runs so the user can review what each request spawned. */
   store?: SessionStore;
+  /** User's ONE_AGENT.md conventions, injected into every launched agent. */
+  conventions?: string;
+  /** Path to the conventions file, propagated to spawned sub-agents. */
+  conventionsPath?: string;
 }
 
 /**
@@ -95,12 +100,19 @@ export class Orchestrator {
     }
 
     const mcpServers = this.delegationServers(descriptor, depth, request);
+    const systemConvention =
+      request.systemConvention ??
+      buildConvention(this.spec, descriptor, this.options.conventions);
     const adapter = this.registry.adapterFor(descriptor);
 
     const record = await this.beginRecord(descriptor, request, depth);
     const collected: string[] = [];
     try {
-      for await (const event of adapter.run(descriptor, { ...request, mcpServers }, hooks)) {
+      for await (const event of adapter.run(
+        descriptor,
+        { ...request, mcpServers, systemConvention },
+        hooks,
+      )) {
         if (event.kind === 'session') await this.note(record, { sessionId: event.sessionId });
         if (event.kind === 'assistant') collected.push(event.text);
         if (event.kind === 'done' && event.result) collected.push(event.result);
@@ -185,6 +197,9 @@ export class Orchestrator {
         ...(requestId ? { ONE_AGENT_REQUEST: requestId } : {}),
         ...(this.options.store ? { ONE_AGENT_HOME: this.options.store.root } : {}),
         ...(this.options.specPath ? { ONE_AGENT_SPEC: this.options.specPath } : {}),
+        ...(this.options.conventionsPath
+          ? { ONE_AGENT_CONVENTIONS: this.options.conventionsPath }
+          : {}),
       },
     };
     return [...existing, server];
