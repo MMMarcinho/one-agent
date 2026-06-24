@@ -183,9 +183,13 @@ npm run dist:mac         # package a .dmg (macOS only)
    a live availability dot, plus **Auto**. Leave it on **Auto** to let one-agent
    route each request to the best available agent; or click a specific agent to
    pin it.
-3. **Describe a task.** Type in the composer at the bottom and press **Enter**
-   (Shift+Enter for a newline). The agent's output streams into the transcript;
-   a badge shows which agent ran and, when auto-routed, why.
+3. **Describe a task — and keep the conversation going.** Type in the composer
+   and press **Enter** (Shift+Enter for a newline). Output streams into the
+   transcript with a badge showing which agent ran (and, when auto-routed, why).
+   Follow-up messages continue the **same live agent session** (Claude Code
+   keeps one process alive across turns), so context carries over. Switching the
+   agent or directory starts a fresh conversation; the header shows **· live**
+   while one is open.
 4. **Interrupt anytime.** While a request runs, the Send button becomes **Stop**
    — click it to cancel the current request without closing the app.
 5. **Review past work.** Each task you run is a **request (需求)** in the
@@ -214,11 +218,11 @@ The user prompt is written to stdin as a stream-json `user` message and the
 stdout event stream is normalized into one-agent's events. Session ids are
 captured for the session store; delegation is injected via `--mcp-config`.
 
-Two refinements from cc-connect are tracked on the roadmap and not yet adopted:
-a **persistent multi-turn session** (keep stdin open across turns instead of one
-request per process) and `--permission-prompt-tool stdio` for **interactive
-permission approval** in the UI. The current single-turn approach is correct and
-works; these would make the desktop chat experience richer.
+Like cc-connect, the adapter keeps the process alive with stdin open and runs
+**multiple turns over one session** (each turn ends on the `result` message), so
+the desktop chat has real conversation continuity. The remaining cc-connect
+refinement not yet adopted is `--permission-prompt-tool stdio` for **interactive
+permission approval** in the UI (tracked on the roadmap).
 
 ## CLI (optional)
 
@@ -236,7 +240,8 @@ node dist/cli/index.js show <id>    # what one request spawned
 
 - [x] Auto-routing from spec rules (deterministic RuleRouter)
 - [x] Desktop app frontend (macOS, Electron) reusing the core
-- [ ] Persistent multi-turn Claude/Codex sessions (chat continuity)
+- [x] Persistent multi-turn Claude Code / ACP sessions (chat continuity)
+- [ ] True persistent Codex sessions (`codex proto` / app server)
 - [ ] Interactive permission approval (`--permission-prompt-tool stdio` / MCP)
 - [ ] Model-assisted routing (pluggable Router)
 - [ ] ACP client `fs/*` methods and full permission flow
