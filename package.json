@@ -14,14 +14,16 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:preload": "esbuild src/desktop/preload/index.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/desktop/preload/index.cjs",
     "build:renderer": "vite build -c desktop/vite.config.ts",
     "dev": "tsx src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:renderer": "tsc -p desktop/renderer/tsconfig.json --noEmit",
-    "desktop:build": "npm run build && npm run build:renderer",
+    "desktop:compile": "npm run build && npm run build:preload",
+    "desktop:build": "npm run desktop:compile && npm run build:renderer",
     "desktop:dev": "cross-env ONE_AGENT_DEV=1 concurrently -k -n vite,electron \"vite -c desktop/vite.config.ts\" \"npm run desktop:electron\"",
-    "desktop:electron": "npm run build && wait-on tcp:5173 && electron .",
+    "desktop:electron": "npm run desktop:compile && wait-on tcp:5173 && electron .",
     "desktop:start": "npm run desktop:build && electron .",
     "dist:mac": "npm run desktop:build && electron-builder --mac",
     "test": "node --test --import tsx ./test/*.test.ts"
