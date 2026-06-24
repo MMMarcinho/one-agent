@@ -30,10 +30,12 @@ agents:
   #   canDelegateTo: []
 
 routing:
-  auto: false                   # set true to let rules auto-pick the agent
-  rules:
-    # - when: "test"            # matched against the prompt and cwd
-    #   use: codex
+  auto: true                    # let one-agent pick the agent (use \`auto\` in the TUI)
+  rules:                        # \`when\` matches the prompt + cwd; substring or /regex/
+    - when: /\\b(test|spec)\\b/i
+      use: codex
+    # - when: "refactor"
+    #   use: claude-code
 
 delegation:
   enabled: true                 # allow agents to spawn other agents

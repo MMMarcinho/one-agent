@@ -19,15 +19,18 @@ export async function executeRequest(
     signal?: AbortSignal;
   },
 ): Promise<void> {
-  const agentId = orchestrator.route({
+  const decision = await orchestrator.resolveAgent({
     agentId: opts.agentId,
     prompt: opts.prompt,
     cwd: opts.cwd,
   });
+  const agentId = decision.agentId;
   const request = await store.createRequest({ prompt: opts.prompt, cwd: opts.cwd });
 
+  const routed = !opts.agentId || opts.agentId === 'auto';
+  const why = routed ? ui.dim(` (auto · ${decision.reason})`) : '';
   process.stdout.write(
-    ui.dim(`\n▸ request ${request.id.slice(0, 8)} · ${agentId} · ${opts.cwd}\n`),
+    ui.dim(`\n▸ request ${request.id.slice(0, 8)} · `) + ui.label(agentId) + why + ui.dim(` · ${opts.cwd}\n`),
   );
 
   let fatal = false;

@@ -33,19 +33,24 @@ export async function interactiveSession(
     return;
   }
 
+  // "auto" lets one-agent route each request among available agents.
+  const selectable = ['auto', ...available];
   const active =
-    opts.agentId && available.includes(opts.agentId)
+    opts.agentId && selectable.includes(opts.agentId)
       ? opts.agentId
-      : available.includes(boot.spec.defaultAgent)
-        ? boot.spec.defaultAgent
-        : available[0];
+      : boot.spec.routing.auto && available.length > 1
+        ? 'auto'
+        : available.includes(boot.spec.defaultAgent)
+          ? boot.spec.defaultAgent
+          : available[0];
 
   stdout.write(
-    ui.dim(`available: ${available.join(', ')}  ·  active: `) + ui.label(active) + '\n',
+    ui.dim(`available: ${selectable.join(', ')}  ·  active: `) + ui.label(active) + '\n',
   );
   stdout.write(
     ui.dim(
-      'commands: /agent <id> switch · /agents list · /quit exit\n' +
+      'commands: /agent <id|auto> switch · /agents list · /quit exit\n' +
+        'auto = let one-agent pick the agent per request.\n' +
         'Ctrl-C interrupts the running request (it does not exit). anything else = a request\n\n',
     ),
   );
@@ -71,16 +76,16 @@ export async function interactiveSession(
       if (!line) continue;
       if (line === '/quit' || line === '/exit') break;
       if (line === '/agents') {
-        stdout.write(ui.dim(`available: ${available.join(', ')}\n`));
+        stdout.write(ui.dim(`available: ${selectable.join(', ')}\n`));
         continue;
       }
       if (line.startsWith('/agent ')) {
         const next = line.slice(7).trim();
-        if (available.includes(next)) {
+        if (selectable.includes(next)) {
           current = next;
           stdout.write(ui.ok(`switched to ${next}\n`));
         } else {
-          stdout.write(ui.err(`"${next}" is not available (${available.join(', ')})\n`));
+          stdout.write(ui.err(`"${next}" is not available (${selectable.join(', ')})\n`));
         }
         continue;
       }

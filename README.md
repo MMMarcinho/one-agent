@@ -95,6 +95,38 @@ of its own memory-file support. Each injected context also includes an
 auto-generated roster of the agent's permitted delegation targets and their
 roles. `one-agent init` scaffolds a starter `ONE_AGENT.md`.
 
+## Auto-routing — "I don't want to pick"
+
+Set `routing.auto: true` and use the `auto` agent (the default in the TUI when
+2+ agents are available). Each request is then routed automatically among the
+agents actually installed on your machine, and the choice is shown with a
+reason:
+
+```
+▸ request 8f2a… · codex (auto · matched rule "/\b(test|spec)\b/i") · /repo
+```
+
+How a request is routed (deterministic `RuleRouter`):
+
+1. **Spec rules** — the first `routing.rules` entry whose `when` matches the
+   prompt + cwd and whose target is available. `when` is a substring, or a
+   `/regex/flags` literal.
+2. **Role heuristic** — a clear single best match between the prompt and the
+   agents' `role` descriptions.
+3. **Default agent**, else any available agent.
+
+```yaml
+routing:
+  auto: true
+  rules:
+    - when: /\b(test|spec)\b/i   # send test work to codex
+      use: codex
+```
+
+The `Router` interface leaves room for a model-assisted router later without
+changing callers. You can still force an agent any time (`/agent codex`, or
+`run -a codex`).
+
 ## Session management
 
 A **request (需求)** is one top-level task. Driving it may start several backend
@@ -129,7 +161,8 @@ In a dev checkout, use `npm run dev -- <args>` (via `tsx`) instead of building.
 
 ## Roadmap
 
-- [ ] Auto-routing from spec rules / model-assisted routing
+- [x] Auto-routing from spec rules (deterministic RuleRouter)
+- [ ] Model-assisted routing (pluggable Router)
 - [ ] Rich permission handling (interactive approval via MCP permission tools)
 - [ ] ACP client `fs/*` methods and full permission flow
 - [ ] Codex `app_server` backend (drive a running Codex app)
