@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { buildConvention } from './conventions.js';
+import { RuleRouter, type Router, type RoutingDecision } from './router.js';
 import type { AgentRegistry } from './registry.js';
 import type { SessionStore, RunRecord } from './session-store.js';
 import type { Spec } from './spec.js';
@@ -23,6 +24,8 @@ export interface OrchestratorOptions {
   conventions?: string;
   /** Path to the conventions file, propagated to spawned sub-agents. */
   conventionsPath?: string;
+  /** Strategy for auto-selecting an agent. Defaults to the rule-based router. */
+  router?: Router;
 }
 
 /**
@@ -49,6 +52,25 @@ export class Orchestrator {
       if (hit) return hit.use;
     }
     return this.spec.defaultAgent;
+  }
+
+  /**
+   * Resolve which agent should handle a request, auto-routing among the agents
+   * actually available on this machine when none is explicitly chosen (agentId
+   * omitted or "auto"). Returns the choice plus a human-readable reason.
+   */
+  async resolveAgent(opts: {
+    agentId?: string;
+    prompt: string;
+    cwd: string;
+  }): Promise<RoutingDecision> {
+    if (opts.agentId && opts.agentId !== 'auto') {
+      return { agentId: opts.agentId, reason: 'selected by you' };
+    }
+    const detected = await this.registry.detectAll(this.spec);
+    const available = [...detected.entries()].filter(([, d]) => d.available).map(([id]) => id);
+    const router = this.options.router ?? new RuleRouter();
+    return router.choose({ spec: this.spec, prompt: opts.prompt, cwd: opts.cwd, available });
   }
 
   /** Whether `parent` is permitted to delegate to `target` under the spec. */
@@ -121,7 +143,7 @@ export class Orchestrator {
         }
         yield event;
       }
-      await this.finish(record, 'done', collected.join(''));
+      await this.finish(record, hooks.signal?.aborted ? 'cancelled' : 'done', collected.join(''));
     } catch (err) {
       await this.finish(record, 'error', String(err));
       throw err;
@@ -154,7 +176,7 @@ export class Orchestrator {
 
   private async finish(
     record: RunRecord | undefined,
-    status: 'done' | 'error',
+    status: 'done' | 'error' | 'cancelled',
     output: string,
   ): Promise<void> {
     if (!record || !this.options.store) return;

@@ -3,6 +3,7 @@ export * from './types.js';
 export * from './adapter.js';
 export * from './registry.js';
 export * from './orchestrator.js';
+export * from './router.js';
 export * from './session-store.js';
 export {
   findConventionsPath,

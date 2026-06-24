@@ -11,17 +11,26 @@ import { renderEvent, ui } from './render.js';
 export async function executeRequest(
   orchestrator: Orchestrator,
   store: SessionStore,
-  opts: { prompt: string; cwd: string; agentId?: string; mode?: PermissionMode },
+  opts: {
+    prompt: string;
+    cwd: string;
+    agentId?: string;
+    mode?: PermissionMode;
+    signal?: AbortSignal;
+  },
 ): Promise<void> {
-  const agentId = orchestrator.route({
+  const decision = await orchestrator.resolveAgent({
     agentId: opts.agentId,
     prompt: opts.prompt,
     cwd: opts.cwd,
   });
+  const agentId = decision.agentId;
   const request = await store.createRequest({ prompt: opts.prompt, cwd: opts.cwd });
 
+  const routed = !opts.agentId || opts.agentId === 'auto';
+  const why = routed ? ui.dim(` (auto · ${decision.reason})`) : '';
   process.stdout.write(
-    ui.dim(`\n▸ request ${request.id.slice(0, 8)} · ${agentId} · ${opts.cwd}\n`),
+    ui.dim(`\n▸ request ${request.id.slice(0, 8)} · `) + ui.label(agentId) + why + ui.dim(` · ${opts.cwd}\n`),
   );
 
   let fatal = false;
@@ -33,11 +42,14 @@ export async function executeRequest(
       permissionMode: opts.mode,
       requestId: request.id,
     },
-    {},
+    { signal: opts.signal },
   )) {
     if (!renderEvent(event, agentId)) fatal = true;
   }
 
+  if (opts.signal?.aborted) {
+    process.stdout.write(ui.warn('\n⊘ request interrupted.\n'));
+  }
   await printSessionBreakdown(store, request.id, !fatal);
 }
 
@@ -55,7 +67,13 @@ export async function printSessionBreakdown(
     const via = run.depth === 0 ? 'user' : `via ${run.parent}`;
     const sid = run.sessionId ? run.sessionId.slice(0, 8) : '—';
     const mark =
-      run.status === 'done' ? ui.ok('✓') : run.status === 'error' ? ui.err('✗') : '·';
+      run.status === 'done'
+        ? ui.ok('✓')
+        : run.status === 'error'
+          ? ui.err('✗')
+          : run.status === 'cancelled'
+            ? ui.warn('⊘')
+            : '·';
     process.stdout.write(
       `${indent}${mark} ${ui.label(run.agentId)} ${ui.dim(`[${via}]`)} ${ui.dim('session ' + sid)}\n`,
     );

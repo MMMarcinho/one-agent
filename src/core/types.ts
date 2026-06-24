@@ -123,4 +123,9 @@ export type PermissionDecision =
 export interface RunHooks {
   /** Resolve a permission prompt. If absent, adapter uses its default mode. */
   onPermission?: (req: PermissionRequest) => Promise<PermissionDecision>;
+  /**
+   * Aborts the run when triggered: adapters terminate the backend process and
+   * end their event stream. Used to cancel a request without exiting the TUI.
+   */
+  signal?: AbortSignal;
 }

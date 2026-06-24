@@ -1,6 +1,16 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
+
+/** Terminate a child process when the signal aborts (now or later). */
+export function killOnAbort(signal: AbortSignal | undefined, child: ChildProcess): void {
+  if (!signal) return;
+  if (signal.aborted) {
+    child.kill('SIGTERM');
+    return;
+  }
+  signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true });
+}
 
 /** Resolve a binary on PATH without throwing. Returns its path or undefined. */
 export async function which(command: string): Promise<string | undefined> {

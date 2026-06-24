@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { AgentAdapter, DetectResult } from '../core/adapter.js';
 import type { AgentDescriptor, AgentEvent, RunHooks, RunRequest } from '../core/types.js';
-import { readLines, which } from './process-util.js';
+import { killOnAbort, readLines, which } from './process-util.js';
 
 /**
  * Generic adapter for any agent that speaks the Agent Client Protocol (ACP) —
@@ -32,9 +32,18 @@ export class AcpAdapter implements AgentAdapter {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...descriptor.env },
     });
+    killOnAbort(hooks.signal, child);
 
     const conn = new JsonRpcConnection(child);
     const queue = new EventQueue();
+
+    // On cancellation, reject any in-flight JSON-RPC call so the driver below
+    // unwinds promptly instead of awaiting a response the killed agent won't send.
+    const onAbort = () => conn.dispose(new Error('run aborted'));
+    if (hooks.signal) {
+      if (hooks.signal.aborted) onAbort();
+      else hooks.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     conn.onNotification = (method, params) => {
       if (method === 'session/update') {
@@ -176,6 +185,14 @@ class JsonRpcConnection {
 
   private respond(id: unknown, result: unknown): void {
     this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+  }
+
+  /** Reject all pending requests; used when the run is cancelled. */
+  dispose(err: unknown): void {
+    for (const [id, waiter] of this.pending) {
+      this.pending.delete(id);
+      waiter.reject(err);
+    }
   }
 
   private async readLoop(): Promise<void> {

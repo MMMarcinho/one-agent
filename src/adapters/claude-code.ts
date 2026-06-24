@@ -8,7 +8,7 @@ import type {
   RunHooks,
   RunRequest,
 } from '../core/types.js';
-import { captureOutput, readLines, which } from './process-util.js';
+import { captureOutput, killOnAbort, readLines, which } from './process-util.js';
 
 /**
  * Drives Claude Code in headless streaming mode:
@@ -36,7 +36,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   async *run(
     descriptor: AgentDescriptor,
     request: RunRequest,
-    _hooks: RunHooks,
+    hooks: RunHooks,
   ): AsyncIterable<AgentEvent> {
     const args = buildArgs(descriptor, request);
     const child = spawn(descriptor.command, args, {
@@ -44,6 +44,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...descriptor.env },
     });
+    killOnAbort(hooks.signal, child);
 
     // Send the prompt as a single stream-json user message, then close stdin
     // to signal end of input for this turn.
