@@ -31,8 +31,8 @@ Adding a backend means writing one adapter; nothing else changes.
 
 ## Architecture
 
-The core is **interface-agnostic** — the CLI is a thin frontend, and a desktop
-app can later reuse the exact same core.
+The core is **interface-agnostic** — both the macOS desktop app and the CLI are
+thin frontends over the exact same core (`src/app.ts` bootstrap).
 
 ```
 src/
@@ -163,46 +163,84 @@ src/desktop/
 Run it (on a Mac):
 
 ```bash
-npm install
-npm run desktop:dev      # Vite dev server + Electron with hot reload
-# or a production-style run:
-npm run desktop:start
-# package a .dmg (macOS only):
-npm run dist:mac
+npm install              # also fetches the Electron binary
+npm run desktop:dev      # Vite dev server + Electron, with hot reload
 ```
 
-The window has a sidebar (directory picker, agent selector incl. **Auto**, and
-recent requests), a streaming transcript, and a composer with **Send / Stop**
-(Stop cancels the running request, mirroring the CLI's Ctrl-C).
-
-> The build was developed headless; the TypeScript (main/preload), renderer
-> typecheck, and Vite bundle all compile. Launching the GUI requires a Mac with
-> the Electron binary installed (`npm install` fetches it outside CI sandboxes).
-
-## Usage
+Other commands:
 
 ```bash
-npm install
-npm run build
-
-node dist/cli/index.js init          # write a starter one-agent.yaml
-node dist/cli/index.js agents        # which agents are available locally
-node dist/cli/index.js               # interactive: pick dir, start a request
-node dist/cli/index.js run "fix the failing test" -a codex
-node dist/cli/index.js requests      # review past requests
-node dist/cli/index.js show <id>     # see what one request spawned
+npm run desktop:start    # production-style run (no dev server)
+npm run dist:mac         # package a .dmg (macOS only)
 ```
 
-In a dev checkout, use `npm run dev -- <args>` (via `tsx`) instead of building.
+### Using the app
+
+1. **Pick a directory.** Use the **Change** button in the sidebar (top-left) and
+   choose your project folder. one-agent loads any `one-agent.yaml` and
+   `ONE_AGENT.md` found there (or falls back to built-in defaults).
+2. **Choose an agent — or don't.** The sidebar lists every configured agent with
+   a live availability dot, plus **Auto**. Leave it on **Auto** to let one-agent
+   route each request to the best available agent; or click a specific agent to
+   pin it.
+3. **Describe a task.** Type in the composer at the bottom and press **Enter**
+   (Shift+Enter for a newline). The agent's output streams into the transcript;
+   a badge shows which agent ran and, when auto-routed, why.
+4. **Interrupt anytime.** While a request runs, the Send button becomes **Stop**
+   — click it to cancel the current request without closing the app.
+5. **Review past work.** Each task you run is a **request (需求)** in the
+   sidebar's *Recent requests*. Click one to see every backend session it
+   spawned across agents — including sub-agents one agent delegated to, indented
+   under the agent that delegated them.
+
+> Developed headless: the TypeScript (main/preload), renderer typecheck, and
+> Vite bundle all compile, but the GUI itself hasn't been launched here — run
+> `npm run desktop:dev` on your Mac to see it and report any style tweaks.
+
+## Driving Claude Code
+
+The Claude Code adapter follows the same headless protocol the community tool
+[cc-connect](https://github.com/chenhg5/cc-connect) uses, and matches it on the
+essentials:
+
+```
+claude -p --input-format stream-json --output-format stream-json --verbose
+       [--model …] [--permission-mode plan|acceptEdits] [--dangerously-skip-permissions]
+       [--resume <sessionId>] [--append-system-prompt <conventions>]
+       [--mcp-config <delegation server> --strict-mcp-config]
+```
+
+The user prompt is written to stdin as a stream-json `user` message and the
+stdout event stream is normalized into one-agent's events. Session ids are
+captured for the session store; delegation is injected via `--mcp-config`.
+
+Two refinements from cc-connect are tracked on the roadmap and not yet adopted:
+a **persistent multi-turn session** (keep stdin open across turns instead of one
+request per process) and `--permission-prompt-tool stdio` for **interactive
+permission approval** in the UI. The current single-turn approach is correct and
+works; these would make the desktop chat experience richer.
+
+## CLI (optional)
+
+The same core is also usable from a terminal:
+
+```bash
+npm run build
+node dist/cli/index.js              # interactive: pick dir, start a request
+node dist/cli/index.js run "…" -a codex
+node dist/cli/index.js requests     # review past requests
+node dist/cli/index.js show <id>    # what one request spawned
+```
 
 ## Roadmap
 
 - [x] Auto-routing from spec rules (deterministic RuleRouter)
+- [x] Desktop app frontend (macOS, Electron) reusing the core
+- [ ] Persistent multi-turn Claude/Codex sessions (chat continuity)
+- [ ] Interactive permission approval (`--permission-prompt-tool stdio` / MCP)
 - [ ] Model-assisted routing (pluggable Router)
-- [ ] Rich permission handling (interactive approval via MCP permission tools)
 - [ ] ACP client `fs/*` methods and full permission flow
 - [ ] Codex `app_server` backend (drive a running Codex app)
-- [ ] Desktop app frontend reusing the core
 - [ ] Live transcript persistence per run (not just summaries)
 
 ## Acknowledgements
