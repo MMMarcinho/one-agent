@@ -143,6 +143,42 @@ Storage is a directory of small JSON files under `~/.one-agent` (override with
 `ONE_AGENT_HOME`); each process writes only its own run files, so delegated
 sub-agents in separate processes record into the same request safely.
 
+## Desktop app (macOS)
+
+A light, Codex-style desktop frontend — pick a directory and start coding from a
+GUI. It reuses the **exact same core** as the CLI (auto-routing, delegation,
+session store, cancel), via Electron whose Node main process imports the
+orchestration core directly.
+
+```
+desktop/
+  vite.config.ts            renderer build (React + Vite)
+  renderer/                 the UI (sidebar · transcript · composer)
+src/desktop/
+  main/                     Electron main — IPC handlers reusing src/app.ts
+  preload/                  typed window.oneAgent bridge (contextBridge)
+  shared/ipc.ts             IPC contract, decoupled from core internals
+```
+
+Run it (on a Mac):
+
+```bash
+npm install
+npm run desktop:dev      # Vite dev server + Electron with hot reload
+# or a production-style run:
+npm run desktop:start
+# package a .dmg (macOS only):
+npm run dist:mac
+```
+
+The window has a sidebar (directory picker, agent selector incl. **Auto**, and
+recent requests), a streaming transcript, and a composer with **Send / Stop**
+(Stop cancels the running request, mirroring the CLI's Ctrl-C).
+
+> The build was developed headless; the TypeScript (main/preload), renderer
+> typecheck, and Vite bundle all compile. Launching the GUI requires a Mac with
+> the Electron binary installed (`npm install` fetches it outside CI sandboxes).
+
 ## Usage
 
 ```bash
