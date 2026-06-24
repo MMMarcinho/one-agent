@@ -7,19 +7,27 @@ import { Orchestrator } from '../src/core/orchestrator.js';
 import { AgentRegistry } from '../src/core/registry.js';
 import { SessionStore } from '../src/core/session-store.js';
 import { builtinSpec } from '../src/core/spec.js';
-import type { AgentAdapter, DetectResult } from '../src/core/adapter.js';
-import type { AgentEvent } from '../src/core/types.js';
+import type { AgentAdapter, AgentSession, DetectResult } from '../src/core/adapter.js';
+import type { AgentEvent, RunHooks } from '../src/core/types.js';
 
-/** A fake adapter that emits a scripted, deterministic event stream. */
+/** A fake adapter whose session emits a scripted, deterministic event stream. */
 class FakeAdapter implements AgentAdapter {
   constructor(public readonly type: string) {}
   async detect(): Promise<DetectResult> {
     return { available: true, resolvedPath: `/fake/${this.type}` };
   }
-  async *run(): AsyncIterable<AgentEvent> {
-    yield { kind: 'session', sessionId: `sess-${this.type}-1` };
-    yield { kind: 'assistant', text: `hello from ${this.type}` };
-    yield { kind: 'done', result: 'ok' };
+  async openSession(): Promise<AgentSession> {
+    const type = this.type;
+    return {
+      sessionId: undefined,
+      async *send(): AsyncIterable<AgentEvent> {
+        yield { kind: 'session', sessionId: `sess-${type}-1` };
+        yield { kind: 'assistant', text: `hello from ${type}` };
+        yield { kind: 'done', result: 'ok' };
+      },
+      interrupt() {},
+      async close() {},
+    };
   }
 }
 
@@ -84,20 +92,27 @@ test('routing falls back to the default agent', async () => {
   assert.equal(orch.route({ agentId: 'codex', prompt: 'x', cwd: '/x' }), 'codex');
 });
 
-/** An adapter that blocks until the run is aborted. */
+/** An adapter whose session blocks until the turn is aborted. */
 class SlowAdapter implements AgentAdapter {
   readonly type = 'claude-code';
   async detect(): Promise<DetectResult> {
     return { available: true };
   }
-  async *run(_d: unknown, _r: unknown, hooks: { signal?: AbortSignal }): AsyncIterable<AgentEvent> {
-    yield { kind: 'session', sessionId: 'slow-1' };
-    yield { kind: 'assistant', text: 'working…' };
-    await new Promise<void>((res) => {
-      if (hooks.signal?.aborted) return res();
-      hooks.signal?.addEventListener('abort', () => res(), { once: true });
-    });
-    yield { kind: 'done' };
+  async openSession(): Promise<AgentSession> {
+    return {
+      sessionId: 'slow-1',
+      async *send(_input: unknown, hooks: RunHooks): AsyncIterable<AgentEvent> {
+        yield { kind: 'session', sessionId: 'slow-1' };
+        yield { kind: 'assistant', text: 'working…' };
+        await new Promise<void>((res) => {
+          if (hooks.signal?.aborted) return res();
+          hooks.signal?.addEventListener('abort', () => res(), { once: true });
+        });
+        yield { kind: 'done' };
+      },
+      interrupt() {},
+      async close() {},
+    };
   }
 }
 
@@ -166,6 +181,28 @@ test('orchestrator.resolveAgent auto-routes among available agents', async () =>
   const orch = new Orchestrator(spec, registry, {});
   const d = await orch.resolveAgent({ agentId: 'auto', prompt: 'write a test', cwd: '/x' });
   assert.equal(d.agentId, 'codex');
+});
+
+test('Conversation records each turn as a run under one request', async () => {
+  const { spec, registry } = fixture();
+  const store = new SessionStore(await mkdtemp(join(tmpdir(), 'oa-')));
+  const orch = new Orchestrator(spec, registry, { store });
+
+  const req = await store.createRequest({ prompt: 'turn one', cwd: '/repo' });
+  const convo = await orch.openConversation({
+    agentId: 'claude-code',
+    cwd: '/repo',
+    requestId: req.id,
+  });
+  for await (const _ of convo.send('turn one')) void _;
+  for await (const _ of convo.send('turn two')) void _;
+  await convo.close();
+
+  const runs = await store.runsFor(req.id);
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0].prompt, 'turn one');
+  assert.equal(runs[1].prompt, 'turn two');
+  assert.ok(runs.every((r) => r.status === 'done'));
 });
 
 test('buildConvention surfaces the delegation roster plus user conventions', async () => {

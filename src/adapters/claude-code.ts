@@ -1,21 +1,22 @@
-import { spawn } from 'node:child_process';
-import type { AgentAdapter, DetectResult } from '../core/adapter.js';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type {
-  AgentDescriptor,
-  AgentEvent,
-  McpServerConfig,
-  PermissionMode,
-  RunHooks,
-  RunRequest,
-} from '../core/types.js';
-import { captureOutput, killOnAbort, readLines, which } from './process-util.js';
+  AgentAdapter,
+  AgentSession,
+  DetectResult,
+  SessionOpts,
+  TurnInput,
+} from '../core/adapter.js';
+import type { AgentDescriptor, AgentEvent, McpServerConfig, PermissionMode, RunHooks } from '../core/types.js';
+import { EventQueue } from './event-queue.js';
+import { captureOutput, readLines, which } from './process-util.js';
 
 /**
- * Drives Claude Code in headless streaming mode:
+ * Drives Claude Code as a persistent, multi-turn session:
  *   claude -p --input-format stream-json --output-format stream-json --verbose
  *
- * We write the prompt as a stream-json user message on stdin and translate the
- * stdout event stream into one-agent's normalized AgentEvent stream.
+ * The process stays alive with stdin open; each turn writes a stream-json user
+ * message and reads events until the `result` message ends that turn. The same
+ * backend session_id persists across turns, giving real conversation continuity.
  */
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly type = 'claude-code';
@@ -33,51 +34,131 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     };
   }
 
-  async *run(
-    descriptor: AgentDescriptor,
-    request: RunRequest,
-    hooks: RunHooks,
-  ): AsyncIterable<AgentEvent> {
-    const args = buildArgs(descriptor, request);
+  async openSession(descriptor: AgentDescriptor, opts: SessionOpts): Promise<AgentSession> {
+    const args = buildArgs(descriptor, opts);
     const child = spawn(descriptor.command, args, {
-      cwd: request.cwd,
+      cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...descriptor.env },
     });
-    killOnAbort(hooks.signal, child);
+    return new ClaudeCodeSession(child);
+  }
+}
 
-    // Send the prompt as a single stream-json user message, then close stdin
-    // to signal end of input for this turn.
-    const userMessage = {
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: request.prompt }] },
-    };
-    child.stdin.write(JSON.stringify(userMessage) + '\n');
-    child.stdin.end();
+class ClaudeCodeSession implements AgentSession {
+  sessionId: string | undefined;
+  private current: { queue: EventQueue } | null = null;
+  private closed = false;
+  private interruptTimer?: NodeJS.Timeout;
+  private controlSeq = 0;
+  private stderr = '';
 
-    let stderr = '';
-    child.stderr.on('data', (d) => (stderr += d.toString()));
+  constructor(private readonly child: ChildProcessWithoutNullStreams) {
+    this.child.stderr.on('data', (d) => (this.stderr += d.toString()));
+    this.child.on('close', () => this.onProcessExit());
+    void this.readLoop();
+  }
 
-    try {
-      for await (const line of readLines(child.stdout)) {
-        const event = parseLine(line);
-        if (event) yield event;
-      }
-    } finally {
-      child.kill();
+  async *send(input: TurnInput, hooks: RunHooks): AsyncIterable<AgentEvent> {
+    if (this.closed) {
+      yield { kind: 'error', message: 'session is closed', fatal: true };
+      yield { kind: 'done' };
+      return;
+    }
+    const queue = new EventQueue();
+    this.current = { queue };
+    if (this.sessionId) queue.push({ kind: 'session', sessionId: this.sessionId });
+
+    const onAbort = (): void => this.interrupt();
+    if (hooks.signal) {
+      if (hooks.signal.aborted) onAbort();
+      else hooks.signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    const code: number = await new Promise((res) => {
-      if (child.exitCode != null) return res(child.exitCode);
-      child.on('close', (c) => res(c ?? 0));
-    });
-    if (code !== 0 && stderr.trim()) {
-      yield { kind: 'error', message: stderr.trim(), fatal: true };
+    const userMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: input.prompt }] },
+    };
+    this.child.stdin.write(JSON.stringify(userMessage) + '\n');
+
+    try {
+      yield* queue;
+    } finally {
+      hooks.signal?.removeEventListener('abort', onAbort);
+      clearTimeout(this.interruptTimer);
+      this.current = null;
+    }
+  }
+
+  interrupt(): void {
+    if (this.closed || !this.current) return;
+    // Best-effort graceful interrupt; fall back to killing the process.
+    const control = {
+      type: 'control_request',
+      request_id: `int_${++this.controlSeq}`,
+      request: { subtype: 'interrupt' },
+    };
+    try {
+      this.child.stdin.write(JSON.stringify(control) + '\n');
+    } catch {
+      /* ignore */
+    }
+    this.interruptTimer = setTimeout(() => this.child.kill('SIGTERM'), 2000);
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.child.stdin.end();
+    } catch {
+      /* ignore */
+    }
+    if (this.child.exitCode == null) {
+      await new Promise<void>((res) => {
+        const t = setTimeout(() => {
+          this.child.kill('SIGTERM');
+          res();
+        }, 1500);
+        this.child.on('close', () => {
+          clearTimeout(t);
+          res();
+        });
+      });
+    }
+  }
+
+  private async readLoop(): Promise<void> {
+    for await (const line of readLines(this.child.stdout)) {
+      const event = parseLine(line);
+      if (!event) continue;
+      if (event.kind === 'session') {
+        this.sessionId = event.sessionId;
+        if (this.current) this.current.queue.push(event);
+        continue;
+      }
+      if (!this.current) continue;
+      this.current.queue.push(event);
+      if (event.kind === 'done') {
+        // Turn finished; keep the process alive for the next turn.
+        this.current.queue.close();
+      }
+    }
+  }
+
+  private onProcessExit(): void {
+    this.closed = true;
+    if (this.current) {
+      if (this.stderr.trim()) {
+        this.current.queue.push({ kind: 'error', message: this.stderr.trim(), fatal: true });
+      }
+      this.current.queue.push({ kind: 'done' });
+      this.current.queue.close();
     }
   }
 }
 
-function buildArgs(descriptor: AgentDescriptor, request: RunRequest): string[] {
+function buildArgs(descriptor: AgentDescriptor, opts: SessionOpts): string[] {
   const args = [
     '-p',
     '--input-format',
@@ -88,16 +169,13 @@ function buildArgs(descriptor: AgentDescriptor, request: RunRequest): string[] {
   ];
   if (descriptor.model) args.push('--model', descriptor.model);
 
-  const mode = request.permissionMode ?? descriptor.permissionMode ?? 'acceptEdits';
+  const mode = opts.permissionMode ?? descriptor.permissionMode ?? 'acceptEdits';
   applyPermissionMode(args, mode);
 
-  if (request.resumeSessionId) args.push('--resume', request.resumeSessionId);
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  if (opts.systemConvention) args.push('--append-system-prompt', opts.systemConvention);
 
-  if (request.systemConvention) {
-    args.push('--append-system-prompt', request.systemConvention);
-  }
-
-  const mcp = mcpConfig(request.mcpServers);
+  const mcp = mcpConfig(opts.mcpServers);
   if (mcp) args.push('--mcp-config', mcp, '--strict-mcp-config');
 
   if (descriptor.args) args.push(...descriptor.args);
@@ -117,8 +195,6 @@ function applyPermissionMode(args: string[], mode: PermissionMode): void {
       args.push('--dangerously-skip-permissions');
       break;
     case 'ask':
-      // Default permission behaviour; interactive prompting in headless mode is
-      // handled via MCP permission tools (future work).
       break;
   }
 }
@@ -150,7 +226,7 @@ function parseLine(line: string): AgentEvent | undefined {
     case 'assistant':
       return assistantEvent(msg);
     case 'result':
-      return resultEvent(msg);
+      return { kind: 'done', result: typeof msg.result === 'string' ? msg.result : undefined };
     default:
       return undefined;
   }
@@ -173,16 +249,4 @@ function assistantEvent(msg: Record<string, unknown>): AgentEvent | undefined {
     }
   }
   return undefined;
-}
-
-function resultEvent(msg: Record<string, unknown>): AgentEvent {
-  const usage = msg.usage as Record<string, number> | undefined;
-  if (usage || typeof msg.total_cost_usd === 'number') {
-    // Emit usage as a side note via the done event's result text is lossy, so
-    // callers that care about tokens read the usage event separately.
-  }
-  return {
-    kind: 'done',
-    result: typeof msg.result === 'string' ? msg.result : undefined,
-  };
 }
