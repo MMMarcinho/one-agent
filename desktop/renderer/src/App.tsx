@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type {
   AgentInfo,
   InitResult,
+  ProjectInfo,
   RequestDetail,
   RequestSummary,
   RunEventMsg,
@@ -14,7 +15,8 @@ import { RequestDetailView } from './components/RequestDetail';
 
 export function App() {
   const [init, setInit] = useState<InitResult | null>(null);
-  const [cwd, setCwd] = useState<string>('');
+  const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [activeAgent, setActiveAgent] = useState<string>('auto');
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -23,8 +25,11 @@ export function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
 
-  const refreshHistory = useCallback(() => {
-    window.oneAgent.listRequests().then(setHistory);
+  const refreshProjects = useCallback(() => {
+    window.oneAgent.listProjects().then(setProjects);
+  }, []);
+  const refreshHistory = useCallback((projectId?: string) => {
+    if (projectId) window.oneAgent.listRequests(projectId).then(setHistory);
   }, []);
 
   const endConversation = useCallback(() => {
@@ -36,7 +41,7 @@ export function App() {
     async (dir?: string) => {
       const res = await window.oneAgent.init(dir);
       setInit(res);
-      setCwd(res.cwd);
+      setProject(res.project);
       setAgents(res.agents);
       const firstAvailable = res.agents.find((a) => a.available);
       const def = res.agents.find((a) => a.isDefault && a.available);
@@ -44,9 +49,10 @@ export function App() {
       setActiveAgent(
         res.routingAuto && availableCount > 1 ? 'auto' : (def?.id ?? firstAvailable?.id ?? 'auto'),
       );
-      refreshHistory();
+      refreshProjects();
+      refreshHistory(res.project.id);
     },
-    [refreshHistory],
+    [refreshProjects, refreshHistory],
   );
 
   useEffect(() => {
@@ -59,20 +65,26 @@ export function App() {
       setTurns((prev) => applyEvent(prev, msg));
       if (msg.kind === 'finished') {
         setRunning((r) => (r === msg.turnId ? null : r));
-        refreshHistory();
+        refreshHistory(project?.id);
+        refreshProjects();
       }
     });
-  }, [refreshHistory]);
+  }, [refreshHistory, refreshProjects, project?.id]);
 
-  const pickDir = useCallback(async () => {
-    const dir = await window.oneAgent.pickDirectory();
-    if (dir) {
+  const switchProject = useCallback(
+    async (path: string) => {
       endConversation();
       setTurns([]);
       setDetail(null);
-      await loadDir(dir);
-    }
-  }, [endConversation, loadDir]);
+      await loadDir(path);
+    },
+    [endConversation, loadDir],
+  );
+
+  const pickDir = useCallback(async () => {
+    const dir = await window.oneAgent.pickDirectory();
+    if (dir) await switchProject(dir);
+  }, [switchProject]);
 
   const selectAgent = useCallback(
     (id: string) => {
@@ -90,6 +102,7 @@ export function App() {
 
   const send = useCallback(
     async (prompt: string) => {
+      if (!project) return;
       const turnId = crypto.randomUUID();
       setDetail(null);
       setRunning(turnId);
@@ -99,7 +112,8 @@ export function App() {
         await window.oneAgent.sendMessage({ conversationId, prompt, turnId });
       } else {
         const res = await window.oneAgent.startConversation({
-          cwd,
+          cwd: project.path,
+          projectId: project.id,
           prompt,
           agentId: activeAgent,
           turnId,
@@ -107,7 +121,7 @@ export function App() {
         setConversationId(res.conversationId);
       }
     },
-    [cwd, activeAgent, conversationId],
+    [project, activeAgent, conversationId],
   );
 
   const stop = useCallback(() => {
@@ -117,47 +131,53 @@ export function App() {
   return (
     <div className="app">
       <Sidebar
-        cwd={cwd}
+        project={project}
+        projects={projects}
         specInfo={init}
         agents={agents}
         activeAgent={activeAgent}
         onPickDir={pickDir}
+        onSelectProject={switchProject}
         onSelectAgent={selectAgent}
         history={history}
         onSelectRequest={(id) => window.oneAgent.getRequest(id).then(setDetail)}
         onNewChat={newChat}
       />
       <main className="main">
-        <Header cwd={cwd} activeAgent={activeAgent} continued={!!conversationId} />
+        <Header project={project} activeAgent={activeAgent} continued={!!conversationId} />
         {detail ? (
           <RequestDetailView detail={detail} onClose={() => setDetail(null)} />
         ) : (
           <Transcript turns={turns} />
         )}
-        <Composer running={!!running} disabled={!cwd} onSend={send} onStop={stop} />
+        <Composer running={!!running} disabled={!project} onSend={send} onStop={stop} />
       </main>
     </div>
   );
 }
 
 function Header({
-  cwd,
+  project,
   activeAgent,
   continued,
 }: {
-  cwd: string;
+  project: ProjectInfo | null;
   activeAgent: string;
   continued: boolean;
 }) {
-  const folder = cwd.split('/').filter(Boolean).pop() ?? cwd;
   return (
     <header className="header">
-      <div className="header-dir" title={cwd}>
-        {folder || 'No directory'}
+      <div className="header-dir" title={project?.path}>
+        {project?.name ?? 'No project'}
       </div>
       <div className="header-agent">
         {activeAgent === 'auto' ? 'Auto' : activeAgent}
-        {continued && <span className="header-cont" title="conversation in progress"> · live</span>}
+        {continued && (
+          <span className="header-cont" title="conversation in progress">
+            {' '}
+            · live
+          </span>
+        )}
       </div>
     </header>
   );

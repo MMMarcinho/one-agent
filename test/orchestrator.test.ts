@@ -205,6 +205,27 @@ test('Conversation records each turn as a run under one request', async () => {
   assert.ok(runs.every((r) => r.status === 'done'));
 });
 
+test('projects: ensureProject is one-per-path and scopes its requests', async () => {
+  const store = new SessionStore(await mkdtemp(join(tmpdir(), 'oa-')));
+  const a = await store.ensureProject('/work/alpha');
+  const aAgain = await store.ensureProject('/work/alpha');
+  const b = await store.ensureProject('/work/beta');
+  assert.equal(a.id, aAgain.id); // same path => same project
+  assert.notEqual(a.id, b.id);
+
+  await store.createRequest({ prompt: 'task in alpha', cwd: '/work/alpha', projectId: a.id });
+  await store.createRequest({ prompt: 'task in beta', cwd: '/work/beta', projectId: b.id });
+
+  const alphaReqs = await store.requestsForProject(a.id);
+  assert.equal(alphaReqs.length, 1);
+  assert.equal(alphaReqs[0].title, 'task in alpha');
+
+  const projects = await store.listProjects();
+  assert.equal(projects.length, 2);
+  // beta was touched last, so it sorts first by lastUsedAt.
+  assert.equal(projects[0].id, b.id);
+});
+
 test('buildConvention surfaces the delegation roster plus user conventions', async () => {
   const { registry } = fixture();
   void registry;

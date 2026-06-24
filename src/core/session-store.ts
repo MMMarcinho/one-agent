@@ -14,12 +14,29 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 export type RunStatus = 'running' | 'done' | 'error' | 'cancelled';
 
+/**
+ * A Project is anchored at a base directory (its "route") and owns every
+ * request run inside it. Projects are created on demand the first time a
+ * directory is opened, and ordered by most-recently used.
+ */
+export interface ProjectRecord {
+  id: string;
+  /** The base directory (absolute path). One project per path. */
+  path: string;
+  /** Display name (defaults to the directory's basename). */
+  name: string;
+  createdAt: string;
+  lastUsedAt: string;
+}
+
 export interface RequestRecord {
   id: string;
+  /** The project (base directory) this request belongs to. */
+  projectId?: string;
   /** Short title (first line of the prompt). */
   title: string;
   prompt: string;
@@ -48,6 +65,7 @@ export interface RunRecord {
 export class SessionStore {
   private readonly requestsDir: string;
   private readonly runsDir: string;
+  private readonly projectsDir: string;
 
   constructor(root?: string) {
     const base = resolve(
@@ -55,6 +73,7 @@ export class SessionStore {
     );
     this.requestsDir = join(base, 'requests');
     this.runsDir = join(base, 'runs');
+    this.projectsDir = join(base, 'projects');
   }
 
   /** The directory this store persists to (propagated to child processes). */
@@ -62,10 +81,56 @@ export class SessionStore {
     return resolve(this.requestsDir, '..');
   }
 
-  async createRequest(input: { prompt: string; cwd: string }): Promise<RequestRecord> {
+  /** Find-or-create the project for a directory, touching its lastUsedAt. */
+  async ensureProject(path: string): Promise<ProjectRecord> {
+    await this.ensure();
+    const abs = resolve(path);
+    const existing = (await this.listProjects()).find((p) => p.path === abs);
+    const now = new Date().toISOString();
+    if (existing) {
+      existing.lastUsedAt = now;
+      await this.writeProject(existing);
+      return existing;
+    }
+    const record: ProjectRecord = {
+      id: randomUUID(),
+      path: abs,
+      name: basename(abs) || abs,
+      createdAt: now,
+      lastUsedAt: now,
+    };
+    await this.writeProject(record);
+    return record;
+  }
+
+  /** Projects, most-recently-used first. */
+  async listProjects(): Promise<ProjectRecord[]> {
+    const files = await this.safeList(this.projectsDir);
+    const records: ProjectRecord[] = [];
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      records.push(JSON.parse(await readFile(join(this.projectsDir, file), 'utf8')));
+    }
+    return records.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+  }
+
+  async getProject(id: string): Promise<ProjectRecord | undefined> {
+    try {
+      return JSON.parse(await readFile(join(this.projectsDir, `${id}.json`), 'utf8'));
+    } catch {
+      return undefined;
+    }
+  }
+
+  async createRequest(input: {
+    prompt: string;
+    cwd: string;
+    projectId?: string;
+  }): Promise<RequestRecord> {
     await this.ensure();
     const record: RequestRecord = {
       id: randomUUID(),
+      projectId: input.projectId,
       title: titleOf(input.prompt),
       prompt: input.prompt,
       cwd: input.cwd,
@@ -116,6 +181,11 @@ export class SessionStore {
     return records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  /** Requests belonging to a project, newest first. */
+  async requestsForProject(projectId: string): Promise<RequestRecord[]> {
+    return (await this.listRequests()).filter((r) => r.projectId === projectId);
+  }
+
   async getRequest(id: string): Promise<RequestRecord | undefined> {
     try {
       return JSON.parse(await readFile(this.requestPath(id), 'utf8'));
@@ -139,10 +209,18 @@ export class SessionStore {
   private async ensure(): Promise<void> {
     await mkdir(this.requestsDir, { recursive: true });
     await mkdir(this.runsDir, { recursive: true });
+    await mkdir(this.projectsDir, { recursive: true });
   }
 
   private async writeRun(record: RunRecord): Promise<void> {
     await writeFile(join(this.runsDir, `${record.id}.json`), JSON.stringify(record, null, 2));
+  }
+
+  private async writeProject(record: ProjectRecord): Promise<void> {
+    await writeFile(
+      join(this.projectsDir, `${record.id}.json`),
+      JSON.stringify(record, null, 2),
+    );
   }
 
   private requestPath(id: string): string {

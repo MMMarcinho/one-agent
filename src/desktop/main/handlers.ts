@@ -59,8 +59,10 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.init, async (_e, startDir?: string): Promise<InitResult> => {
     const cwd = startDir || homedir();
     const boot = await bootFor(cwd);
+    const project = await boot.store.ensureProject(cwd);
     return {
       cwd,
+      project: { id: project.id, path: project.path, name: project.name, lastUsedAt: project.lastUsedAt },
       specPath: boot.specPath,
       conventionsPath: boot.conventionsPath,
       usingBuiltin: boot.usingBuiltin,
@@ -68,6 +70,12 @@ export function registerIpc(): void {
       routingAuto: boot.spec.routing.auto,
       agents: await agentInfos(boot),
     };
+  });
+
+  ipcMain.handle(IPC.listProjects, async () => {
+    const boot = await bootFor(homedir());
+    const projects = await boot.store.listProjects();
+    return projects.map((p) => ({ id: p.id, path: p.path, name: p.name, lastUsedAt: p.lastUsedAt }));
   });
 
   ipcMain.handle(IPC.pickDirectory, async (): Promise<string | null> => {
@@ -81,9 +89,9 @@ export function registerIpc(): void {
     return agentInfos(await bootFor(cwd));
   });
 
-  ipcMain.handle(IPC.listRequests, async () => {
+  ipcMain.handle(IPC.listRequests, async (_e, projectId: string) => {
     const boot = await bootFor(homedir());
-    const requests = await boot.store.listRequests();
+    const requests = await boot.store.requestsForProject(projectId);
     const out = [];
     for (const r of requests) {
       const runs = await boot.store.runsFor(r.id);
@@ -112,7 +120,11 @@ export function registerIpc(): void {
       prompt: input.prompt,
       cwd: input.cwd,
     });
-    const request = await boot.store.createRequest({ prompt: input.prompt, cwd: input.cwd });
+    const request = await boot.store.createRequest({
+      prompt: input.prompt,
+      cwd: input.cwd,
+      projectId: input.projectId,
+    });
     const convo = await boot.orchestrator.openConversation({
       agentId: decision.agentId,
       cwd: input.cwd,

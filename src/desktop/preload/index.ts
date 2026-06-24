@@ -10,8 +10,9 @@ import {
 const api: OneAgentAPI = {
   init: (startDir) => ipcRenderer.invoke(IPC.init, startDir),
   pickDirectory: () => ipcRenderer.invoke(IPC.pickDirectory),
+  listProjects: () => ipcRenderer.invoke(IPC.listProjects),
   listAgents: (cwd) => ipcRenderer.invoke(IPC.listAgents, cwd),
-  listRequests: () => ipcRenderer.invoke(IPC.listRequests),
+  listRequests: (projectId) => ipcRenderer.invoke(IPC.listRequests, projectId),
   getRequest: (id) => ipcRenderer.invoke(IPC.getRequest, id),
   startConversation: (input: StartConversationInput) =>
     ipcRenderer.invoke(IPC.startConversation, input),

@@ -16,8 +16,16 @@ export interface AgentInfo {
   canDelegateTo?: string[];
 }
 
+export interface ProjectInfo {
+  id: string;
+  path: string;
+  name: string;
+  lastUsedAt: string;
+}
+
 export interface InitResult {
   cwd: string;
+  project: ProjectInfo;
   specPath?: string;
   conventionsPath?: string;
   usingBuiltin: boolean;
@@ -80,6 +88,8 @@ export type RunEventMsg =
 
 export interface StartConversationInput {
   cwd: string;
+  /** The project this conversation belongs to. */
+  projectId: string;
   prompt: string;
   /** undefined or "auto" => auto-route. */
   agentId?: string;
@@ -98,8 +108,11 @@ export interface SendMessageInput {
 export interface OneAgentAPI {
   init(startDir?: string): Promise<InitResult>;
   pickDirectory(): Promise<string | null>;
+  /** Projects (opened directories), most-recently-used first. */
+  listProjects(): Promise<ProjectInfo[]>;
   listAgents(cwd: string): Promise<AgentInfo[]>;
-  listRequests(): Promise<RequestSummary[]>;
+  /** Requests (sessions) belonging to a project, newest first. */
+  listRequests(projectId: string): Promise<RequestSummary[]>;
   getRequest(id: string): Promise<RequestDetail | null>;
   /** Open a conversation with its first turn. Returns the conversation id. */
   startConversation(
@@ -117,6 +130,7 @@ export interface OneAgentAPI {
 export const IPC = {
   init: 'app:init',
   pickDirectory: 'dialog:pickDirectory',
+  listProjects: 'projects:list',
   listAgents: 'agents:list',
   listRequests: 'requests:list',
   getRequest: 'request:get',
