@@ -7,7 +7,7 @@ export type Block =
 export type TurnStatus = 'running' | 'done' | 'cancelled' | 'error';
 
 export interface Turn {
-  requestId: string;
+  turnId: string;
   prompt: string;
   agentId?: string;
   reason?: string;

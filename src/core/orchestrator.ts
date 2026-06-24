@@ -1,16 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { runOnce, type SessionOpts } from './adapter.js';
 import { buildConvention } from './conventions.js';
+import { Conversation } from './conversation.js';
 import { RuleRouter, type Router, type RoutingDecision } from './router.js';
 import type { AgentRegistry } from './registry.js';
 import type { SessionStore, RunRecord } from './session-store.js';
 import type { Spec } from './spec.js';
-import type {
-  AgentDescriptor,
-  AgentEvent,
-  McpServerConfig,
-  RunHooks,
-  RunRequest,
-} from './types.js';
+import type { AgentDescriptor, AgentEvent, McpServerConfig, RunHooks, RunRequest } from './types.js';
 
 export interface OrchestratorOptions {
   /** Path to the active spec file, propagated to spawned sub-agents. */
@@ -83,18 +79,41 @@ export class Orchestrator {
     }
     const allowed = this.spec.agents[parent]?.canDelegateTo ?? [];
     if (!allowed.includes(target)) {
-      return {
-        ok: false,
-        reason: `spec does not allow "${parent}" to delegate to "${target}"`,
-      };
+      return { ok: false, reason: `spec does not allow "${parent}" to delegate to "${target}"` };
     }
     return { ok: true };
   }
 
   /**
-   * Run an agent turn. Enforces delegation depth and, when the run is allowed
-   * to delegate further, injects the one-agent MCP server so the agent can
-   * spawn sub-agents within the policy.
+   * Open a persistent multi-turn conversation with an agent. The agent must be
+   * chosen explicitly (route/resolveAgent first). Each `send` is one turn and
+   * is recorded as a run under `requestId`.
+   */
+  async openConversation(opts: {
+    agentId: string;
+    cwd: string;
+    requestId: string;
+    permissionMode?: RunRequest['permissionMode'];
+  }): Promise<Conversation> {
+    const descriptor = this.registry.descriptor(this.spec, opts.agentId);
+    const detection = await this.registry.detect(descriptor);
+    if (!detection.available) {
+      throw new Error(`agent "${descriptor.id}" is unavailable: ${detection.reason}`);
+    }
+    const sessionOpts = this.buildSessionOpts(descriptor, 0, {
+      cwd: opts.cwd,
+      permissionMode: opts.permissionMode,
+      requestId: opts.requestId,
+    });
+    const adapter = this.registry.adapterFor(descriptor);
+    const session = await adapter.openSession(descriptor, sessionOpts);
+    return new Conversation(session, opts.requestId, descriptor.id, this.options.store);
+  }
+
+  /**
+   * Run a single agent turn one-shot (open session, send, close). Used for
+   * delegated sub-tasks and non-interactive CLI runs. Enforces delegation depth
+   * and injects the delegation MCP server when further delegation is allowed.
    */
   async *run(request: RunRequest, hooks: RunHooks = {}): AsyncIterable<AgentEvent> {
     const descriptor = this.registry.descriptor(this.spec, request.agentId);
@@ -121,18 +140,25 @@ export class Orchestrator {
       return;
     }
 
-    const mcpServers = this.delegationServers(descriptor, depth, request);
-    const systemConvention =
-      request.systemConvention ??
-      buildConvention(this.spec, descriptor, this.options.conventions);
+    const sessionOpts = this.buildSessionOpts(descriptor, depth, {
+      cwd: request.cwd,
+      permissionMode: request.permissionMode,
+      requestId: request.requestId ?? request.delegation?.requestId,
+      rootRunId: request.delegation?.rootRunId,
+      mcpServers: request.mcpServers,
+      systemConvention: request.systemConvention,
+      resumeSessionId: request.resumeSessionId,
+    });
     const adapter = this.registry.adapterFor(descriptor);
 
     const record = await this.beginRecord(descriptor, request, depth);
     const collected: string[] = [];
     try {
-      for await (const event of adapter.run(
+      for await (const event of runOnce(
+        adapter,
         descriptor,
-        { ...request, mcpServers, systemConvention },
+        sessionOpts,
+        { prompt: request.prompt },
         hooks,
       )) {
         if (event.kind === 'session') await this.note(record, { sessionId: event.sessionId });
@@ -180,7 +206,7 @@ export class Orchestrator {
     output: string,
   ): Promise<void> {
     if (!record || !this.options.store) return;
-    if (record.status !== 'running') return; // already finalized (e.g. fatal error)
+    if (record.status !== 'running') return;
     await this.options.store.updateRun(record, {
       status,
       endedAt: new Date().toISOString(),
@@ -188,24 +214,49 @@ export class Orchestrator {
     });
   }
 
+  /** Compute the SessionOpts for a backend: delegation MCP + conventions. */
+  private buildSessionOpts(
+    descriptor: AgentDescriptor,
+    depth: number,
+    p: {
+      cwd: string;
+      permissionMode?: RunRequest['permissionMode'];
+      requestId?: string;
+      rootRunId?: string;
+      mcpServers?: McpServerConfig[];
+      systemConvention?: string;
+      resumeSessionId?: string;
+    },
+  ): SessionOpts {
+    const mcpServers = this.delegationServers(descriptor, depth, p);
+    const systemConvention =
+      p.systemConvention ?? buildConvention(this.spec, descriptor, this.options.conventions);
+    return {
+      cwd: p.cwd,
+      permissionMode: p.permissionMode,
+      mcpServers,
+      systemConvention,
+      resumeSessionId: p.resumeSessionId,
+    };
+  }
+
   /**
-   * Build the MCP server injection for a child agent. Returns [] when the agent
-   * has no permitted delegation targets or the next hop would exceed maxDepth.
+   * Build the MCP server injection for a child agent. Returns the existing list
+   * when the agent has no permitted targets or the next hop exceeds maxDepth.
    */
   private delegationServers(
     descriptor: AgentDescriptor,
     depth: number,
-    request: RunRequest,
+    p: { cwd: string; requestId?: string; rootRunId?: string; mcpServers?: McpServerConfig[] },
   ): McpServerConfig[] {
-    const existing = request.mcpServers ?? [];
+    const existing = p.mcpServers ?? [];
     if (!this.spec.delegation.enabled) return existing;
     if (depth + 1 > this.spec.delegation.maxDepth) return existing;
 
     const targets = descriptor.canDelegateTo ?? [];
     if (targets.length === 0) return existing;
 
-    const rootRunId = request.delegation?.rootRunId ?? randomUUID();
-    const requestId = request.requestId ?? request.delegation?.requestId;
+    const rootRunId = p.rootRunId ?? randomUUID();
     const server: McpServerConfig = {
       name: 'one-agent',
       command: this.options.delegationBin ?? process.env.ONE_AGENT_BIN ?? 'one-agent',
@@ -215,8 +266,8 @@ export class Orchestrator {
         ONE_AGENT_DEPTH: String(depth + 1),
         ONE_AGENT_ALLOWED: targets.join(','),
         ONE_AGENT_ROOT_RUN: rootRunId,
-        ONE_AGENT_CWD: request.cwd,
-        ...(requestId ? { ONE_AGENT_REQUEST: requestId } : {}),
+        ONE_AGENT_CWD: p.cwd,
+        ...(p.requestId ? { ONE_AGENT_REQUEST: p.requestId } : {}),
         ...(this.options.store ? { ONE_AGENT_HOME: this.options.store.root } : {}),
         ...(this.options.specPath ? { ONE_AGENT_SPEC: this.options.specPath } : {}),
         ...(this.options.conventionsPath
@@ -235,7 +286,5 @@ function summarizeOutput(output: string): string {
 
 function matchesRule(when: string, opts: { prompt: string; cwd: string }): boolean {
   const needle = when.toLowerCase();
-  return (
-    opts.prompt.toLowerCase().includes(needle) || opts.cwd.toLowerCase().includes(needle)
-  );
+  return opts.prompt.toLowerCase().includes(needle) || opts.cwd.toLowerCase().includes(needle);
 }

@@ -24,7 +24,7 @@ export function Transcript({ turns }: { turns: Turn[] }) {
   return (
     <div className="transcript">
       {turns.map((t) => (
-        <div className="turn" key={t.requestId}>
+        <div className="turn" key={t.turnId}>
           <div className="user-msg">{t.prompt}</div>
 
           <div className="agent-line">

@@ -1,22 +1,19 @@
-import { spawn } from 'node:child_process';
-import type { AgentAdapter, DetectResult } from '../core/adapter.js';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type {
-  AgentDescriptor,
-  AgentEvent,
-  McpServerConfig,
-  PermissionMode,
-  RunHooks,
-  RunRequest,
-} from '../core/types.js';
+  AgentAdapter,
+  AgentSession,
+  DetectResult,
+  SessionOpts,
+  TurnInput,
+} from '../core/adapter.js';
+import type { AgentDescriptor, AgentEvent, McpServerConfig, PermissionMode, RunHooks } from '../core/types.js';
 import { captureOutput, killOnAbort, readLines, which } from './process-util.js';
 
 /**
- * Drives the Codex CLI in headless mode:
- *   codex exec --json --sandbox <mode> "<prompt>"
- *
- * The exec JSON event shape has shifted across Codex versions, so the parser is
- * deliberately tolerant: it pulls assistant text out of the common shapes and
- * always closes the stream with a `done` event.
+ * Drives the Codex CLI. Codex `exec` is one-shot, so this is a pseudo-session:
+ * each turn spawns `codex exec --json` afresh. The uniform AgentSession shape
+ * keeps the orchestrator simple; true persistent multi-turn continuity would
+ * use `codex proto` / the app server (tracked on the roadmap).
  */
 export class CodexAdapter implements AgentAdapter {
   readonly type = 'codex';
@@ -34,32 +31,45 @@ export class CodexAdapter implements AgentAdapter {
     };
   }
 
-  async *run(
-    descriptor: AgentDescriptor,
-    request: RunRequest,
-    hooks: RunHooks,
-  ): AsyncIterable<AgentEvent> {
-    const args = buildArgs(descriptor, request);
-    const child = spawn(descriptor.command, args, {
-      cwd: request.cwd,
+  async openSession(descriptor: AgentDescriptor, opts: SessionOpts): Promise<AgentSession> {
+    return new CodexSession(descriptor, opts);
+  }
+}
+
+class CodexSession implements AgentSession {
+  sessionId: string | undefined;
+  private active?: ChildProcess;
+
+  constructor(
+    private readonly descriptor: AgentDescriptor,
+    private readonly opts: SessionOpts,
+  ) {}
+
+  async *send(input: TurnInput, hooks: RunHooks): AsyncIterable<AgentEvent> {
+    const args = buildArgs(this.descriptor, this.opts, input);
+    const child = spawn(this.descriptor.command, args, {
+      cwd: this.opts.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...descriptor.env },
+      env: { ...process.env, ...this.descriptor.env },
     });
+    this.active = child;
     killOnAbort(hooks.signal, child);
 
     let stderr = '';
-    child.stderr.on('data', (d) => (stderr += d.toString()));
+    child.stderr?.on('data', (d) => (stderr += d.toString()));
 
     let sawDone = false;
     try {
-      for await (const line of readLines(child.stdout)) {
+      for await (const line of readLines(child.stdout!)) {
         const event = parseLine(line);
         if (!event) continue;
+        if (event.kind === 'session') this.sessionId = event.sessionId;
         if (event.kind === 'done') sawDone = true;
         yield event;
       }
     } finally {
       child.kill();
+      this.active = undefined;
     }
 
     const code: number = await new Promise((res) => {
@@ -71,24 +81,29 @@ export class CodexAdapter implements AgentAdapter {
     }
     if (!sawDone) yield { kind: 'done' };
   }
+
+  interrupt(): void {
+    this.active?.kill('SIGTERM');
+  }
+
+  async close(): Promise<void> {
+    this.active?.kill('SIGTERM');
+  }
 }
 
-function buildArgs(descriptor: AgentDescriptor, request: RunRequest): string[] {
+function buildArgs(descriptor: AgentDescriptor, opts: SessionOpts, input: TurnInput): string[] {
   const args = ['exec', '--json'];
   if (descriptor.model) args.push('-m', descriptor.model);
 
-  const mode = request.permissionMode ?? descriptor.permissionMode ?? 'acceptEdits';
+  const mode = opts.permissionMode ?? descriptor.permissionMode ?? 'acceptEdits';
   args.push('--sandbox', sandboxFor(mode));
 
-  for (const override of mcpOverrides(request.mcpServers)) {
+  for (const override of mcpOverrides(opts.mcpServers)) {
     args.push('-c', override);
   }
 
   if (descriptor.args) args.push(...descriptor.args);
-
-  // Codex exec has no append-system-prompt flag, so fold the orchestration
-  // conventions into a framed preamble ahead of the task. Prompt is positional.
-  args.push(withConvention(request.prompt, request.systemConvention));
+  args.push(withConvention(input.prompt, opts.systemConvention));
   return args;
 }
 
@@ -110,16 +125,13 @@ function sandboxFor(mode: PermissionMode): string {
   }
 }
 
-/** Inject MCP servers via `-c mcp_servers.<name>....` config overrides. */
 function mcpOverrides(servers?: McpServerConfig[]): string[] {
   if (!servers || servers.length === 0) return [];
   const out: string[] = [];
   for (const s of servers) {
     const key = `mcp_servers.${s.name}`;
     out.push(`${key}.command=${JSON.stringify(s.command)}`);
-    if (s.args && s.args.length) {
-      out.push(`${key}.args=${JSON.stringify(s.args)}`);
-    }
+    if (s.args && s.args.length) out.push(`${key}.args=${JSON.stringify(s.args)}`);
     for (const [k, v] of Object.entries(s.env ?? {})) {
       out.push(`${key}.env.${k}=${JSON.stringify(v)}`);
     }
@@ -135,12 +147,10 @@ function parseLine(line: string): AgentEvent | undefined {
     return undefined;
   }
 
-  // Newer shape: { type: "item.completed", item: { type, text/message } }
   if (typeof msg.type === 'string' && msg.item && typeof msg.item === 'object') {
     return fromItem(msg.item as Record<string, unknown>, msg.type);
   }
 
-  // Older shape: { msg: { type, message/text } }
   const inner = (msg.msg ?? msg) as Record<string, unknown>;
   const innerType = inner.type;
   if (innerType === 'agent_message' || innerType === 'assistant_message') {

@@ -1,12 +1,28 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { homedir } from 'node:os';
+import type { Conversation } from '../../core/conversation.js';
 import { bootstrap, type Bootstrapped } from '../../app.js';
-import { IPC, type AgentInfo, type InitResult, type StartRequestInput } from '../shared/ipc.js';
+import {
+  IPC,
+  type AgentInfo,
+  type InitResult,
+  type SendMessageInput,
+  type StartConversationInput,
+} from '../shared/ipc.js';
 
 /** Per-directory bootstrap cache (spec + orchestrator + store). */
 const boots = new Map<string, Promise<Bootstrapped>>();
-/** In-flight requests, so the UI can cancel them. */
-const activeRuns = new Map<string, AbortController>();
+
+interface LiveConversation {
+  convo: Conversation;
+  cwd: string;
+  agentId: string;
+  reason: string;
+  /** Controls the in-flight turn, so the UI can interrupt it. */
+  turnController?: AbortController;
+}
+/** Open conversations keyed by conversationId (= store requestId). */
+const conversations = new Map<string, LiveConversation>();
 
 function bootFor(cwd: string): Promise<Bootstrapped> {
   let b = boots.get(cwd);
@@ -43,8 +59,10 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.init, async (_e, startDir?: string): Promise<InitResult> => {
     const cwd = startDir || homedir();
     const boot = await bootFor(cwd);
+    const project = await boot.store.ensureProject(cwd);
     return {
       cwd,
+      project: { id: project.id, path: project.path, name: project.name, lastUsedAt: project.lastUsedAt },
       specPath: boot.specPath,
       conventionsPath: boot.conventionsPath,
       usingBuiltin: boot.usingBuiltin,
@@ -52,6 +70,12 @@ export function registerIpc(): void {
       routingAuto: boot.spec.routing.auto,
       agents: await agentInfos(boot),
     };
+  });
+
+  ipcMain.handle(IPC.listProjects, async () => {
+    const boot = await bootFor(homedir());
+    const projects = await boot.store.listProjects();
+    return projects.map((p) => ({ id: p.id, path: p.path, name: p.name, lastUsedAt: p.lastUsedAt }));
   });
 
   ipcMain.handle(IPC.pickDirectory, async (): Promise<string | null> => {
@@ -65,9 +89,9 @@ export function registerIpc(): void {
     return agentInfos(await bootFor(cwd));
   });
 
-  ipcMain.handle(IPC.listRequests, async () => {
+  ipcMain.handle(IPC.listRequests, async (_e, projectId: string) => {
     const boot = await bootFor(homedir());
-    const requests = await boot.store.listRequests();
+    const requests = await boot.store.requestsForProject(projectId);
     const out = [];
     for (const r of requests) {
       const runs = await boot.store.runsFor(r.id);
@@ -89,75 +113,87 @@ export function registerIpc(): void {
     return { ...req, runs };
   });
 
-  ipcMain.handle(IPC.startRequest, async (_e, input: StartRequestInput) => {
+  ipcMain.handle(IPC.startConversation, async (_e, input: StartConversationInput) => {
     const boot = await bootFor(input.cwd);
     const decision = await boot.orchestrator.resolveAgent({
       agentId: input.agentId,
       prompt: input.prompt,
       cwd: input.cwd,
     });
-    const request = await boot.store.createRequest({ prompt: input.prompt, cwd: input.cwd });
-    const controller = new AbortController();
-    activeRuns.set(request.id, controller);
-
-    // Stream asynchronously; the renderer already has the requestId to listen.
-    void streamRun(boot, {
+    const request = await boot.store.createRequest({
+      prompt: input.prompt,
+      cwd: input.cwd,
+      projectId: input.projectId,
+    });
+    const convo = await boot.orchestrator.openConversation({
+      agentId: decision.agentId,
+      cwd: input.cwd,
       requestId: request.id,
+      permissionMode: input.mode,
+    });
+    conversations.set(request.id, {
+      convo,
+      cwd: input.cwd,
       agentId: decision.agentId,
       reason: decision.reason,
-      input,
-      signal: controller.signal,
     });
 
-    return { requestId: request.id };
+    void runTurn(request.id, input.turnId, input.prompt);
+    return { conversationId: request.id, agentId: decision.agentId, reason: decision.reason };
   });
 
-  ipcMain.handle(IPC.cancelRequest, async (_e, requestId: string) => {
-    activeRuns.get(requestId)?.abort();
+  ipcMain.handle(IPC.sendMessage, async (_e, input: SendMessageInput) => {
+    if (!conversations.has(input.conversationId)) return;
+    void runTurn(input.conversationId, input.turnId, input.prompt);
+  });
+
+  ipcMain.handle(IPC.cancelTurn, async (_e, conversationId: string) => {
+    const live = conversations.get(conversationId);
+    live?.turnController?.abort();
+    live?.convo.interrupt();
+  });
+
+  ipcMain.handle(IPC.closeConversation, async (_e, conversationId: string) => {
+    const live = conversations.get(conversationId);
+    if (!live) return;
+    conversations.delete(conversationId);
+    live.turnController?.abort();
+    await live.convo.close();
   });
 }
 
-async function streamRun(
-  boot: Bootstrapped,
-  ctx: {
-    requestId: string;
-    agentId: string;
-    reason: string;
-    input: StartRequestInput;
-    signal: AbortSignal;
-  },
-): Promise<void> {
+/** Stream one turn of a conversation to the renderer. */
+async function runTurn(conversationId: string, turnId: string, prompt: string): Promise<void> {
+  const live = conversations.get(conversationId);
+  if (!live) return;
+  const controller = new AbortController();
+  live.turnController = controller;
+
   broadcast(IPC.runEvent, {
-    requestId: ctx.requestId,
+    conversationId,
+    turnId,
     kind: 'routed',
-    agentId: ctx.agentId,
-    reason: ctx.reason,
+    agentId: live.agentId,
+    reason: live.reason,
   });
   try {
-    for await (const event of boot.orchestrator.run(
-      {
-        agentId: ctx.agentId,
-        cwd: ctx.input.cwd,
-        prompt: ctx.input.prompt,
-        permissionMode: ctx.input.mode,
-        requestId: ctx.requestId,
-      },
-      { signal: ctx.signal },
-    )) {
-      broadcast(IPC.runEvent, { requestId: ctx.requestId, kind: 'event', event });
+    for await (const event of live.convo.send(prompt, { signal: controller.signal })) {
+      broadcast(IPC.runEvent, { conversationId, turnId, kind: 'event', event });
     }
   } catch (err) {
     broadcast(IPC.runEvent, {
-      requestId: ctx.requestId,
+      conversationId,
+      turnId,
       kind: 'event',
       event: { kind: 'error', message: String(err), fatal: true },
     });
   } finally {
-    activeRuns.delete(ctx.requestId);
+    if (live.turnController === controller) live.turnController = undefined;
     broadcast(IPC.runEvent, {
-      requestId: ctx.requestId,
+      conversationId,
+      turnId,
       kind: 'finished',
-      cancelled: ctx.signal.aborted,
+      cancelled: controller.signal.aborted,
     });
   }
 }

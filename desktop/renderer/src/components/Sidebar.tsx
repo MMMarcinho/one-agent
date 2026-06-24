@@ -1,11 +1,13 @@
-import type { AgentInfo, InitResult, RequestSummary } from '@shared/ipc';
+import type { AgentInfo, InitResult, ProjectInfo, RequestSummary } from '@shared/ipc';
 
 interface Props {
-  cwd: string;
+  project: ProjectInfo | null;
+  projects: ProjectInfo[];
   specInfo: InitResult | null;
   agents: AgentInfo[];
   activeAgent: string;
   onPickDir: () => void;
+  onSelectProject: (path: string) => void;
   onSelectAgent: (id: string) => void;
   history: RequestSummary[];
   onSelectRequest: (id: string) => void;
@@ -13,17 +15,18 @@ interface Props {
 }
 
 export function Sidebar({
-  cwd,
+  project,
+  projects,
   specInfo,
   agents,
   activeAgent,
   onPickDir,
+  onSelectProject,
   onSelectAgent,
   history,
   onSelectRequest,
   onNewChat,
 }: Props) {
-  const folder = cwd.split('/').filter(Boolean).pop() ?? cwd;
   const availableCount = agents.filter((a) => a.available).length;
 
   return (
@@ -33,15 +36,46 @@ export function Sidebar({
         one-agent
       </div>
 
-      <button className="new-chat" onClick={onNewChat}>
-        + New request
+      <Section label="Projects" action={<button className="link" onClick={onPickDir}>+ Open</button>}>
+        {projects.length === 0 && <div className="empty">Open a folder to start</div>}
+        <ul className="projects">
+          {projects.map((p) => (
+            <li key={p.id}>
+              <button
+                className={`project-item${project?.id === p.id ? ' active' : ''}`}
+                title={p.path}
+                onClick={() => onSelectProject(p.path)}
+              >
+                <span className="project-name">{p.name}</span>
+                <span className="project-path">{shorten(p.path)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      <button className="new-chat" onClick={onNewChat} disabled={!project}>
+        + New session
       </button>
 
-      <Section label="Directory">
-        <button className="dir-button" onClick={onPickDir} title={cwd}>
-          <span className="dir-name">{folder || 'Choose a folder…'}</span>
-          <span className="dir-change">Change</span>
-        </button>
+      <Section label="Agent">
+        <AgentRow
+          title="Auto"
+          subtitle={`route automatically · ${availableCount} available`}
+          available={availableCount > 0}
+          active={activeAgent === 'auto'}
+          onClick={() => onSelectAgent('auto')}
+        />
+        {agents.map((a) => (
+          <AgentRow
+            key={a.id}
+            title={a.id}
+            subtitle={a.available ? a.role : (a.reason ?? 'unavailable')}
+            available={a.available}
+            active={activeAgent === a.id}
+            onClick={() => a.available && onSelectAgent(a.id)}
+          />
+        ))}
         {specInfo && (
           <div className="badges">
             <span className="badge" title={specInfo.specPath}>
@@ -52,32 +86,10 @@ export function Sidebar({
         )}
       </Section>
 
-      <Section label="Agent">
-        <AgentRow
-          id="auto"
-          title="Auto"
-          subtitle={`route automatically · ${availableCount} available`}
-          available={availableCount > 0}
-          active={activeAgent === 'auto'}
-          onClick={() => onSelectAgent('auto')}
-        />
-        {agents.map((a) => (
-          <AgentRow
-            key={a.id}
-            id={a.id}
-            title={a.id}
-            subtitle={a.available ? a.role : (a.reason ?? 'unavailable')}
-            available={a.available}
-            active={activeAgent === a.id}
-            onClick={() => a.available && onSelectAgent(a.id)}
-          />
-        ))}
-      </Section>
-
-      <Section label="Recent requests">
-        {history.length === 0 && <div className="empty">No requests yet</div>}
+      <Section label="Sessions">
+        {history.length === 0 && <div className="empty">No sessions yet</div>}
         <ul className="history">
-          {history.slice(0, 30).map((r) => (
+          {history.slice(0, 40).map((r) => (
             <li key={r.id}>
               <button
                 className="history-item"
@@ -95,10 +107,21 @@ export function Sidebar({
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({
+  label,
+  action,
+  children,
+}: {
+  label: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="section">
-      <div className="section-label">{label}</div>
+      <div className="section-head">
+        <div className="section-label">{label}</div>
+        {action}
+      </div>
       {children}
     </div>
   );
@@ -111,7 +134,6 @@ function AgentRow({
   active,
   onClick,
 }: {
-  id: string;
   title: string;
   subtitle?: string;
   available: boolean;
@@ -131,4 +153,9 @@ function AgentRow({
       </span>
     </button>
   );
+}
+
+function shorten(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.length <= 2 ? path : '…/' + parts.slice(-2).join('/');
 }

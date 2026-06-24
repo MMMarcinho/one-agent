@@ -1,16 +1,19 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { AgentAdapter, DetectResult } from '../core/adapter.js';
-import type { AgentDescriptor, AgentEvent, RunHooks, RunRequest } from '../core/types.js';
-import { killOnAbort, readLines, which } from './process-util.js';
+import type {
+  AgentAdapter,
+  AgentSession,
+  DetectResult,
+  SessionOpts,
+  TurnInput,
+} from '../core/adapter.js';
+import type { AgentDescriptor, AgentEvent, RunHooks } from '../core/types.js';
+import { EventQueue } from './event-queue.js';
+import { readLines, which } from './process-util.js';
 
 /**
  * Generic adapter for any agent that speaks the Agent Client Protocol (ACP) —
- * JSON-RPC 2.0 over stdio. This is the long-tail path: an agent only needs an
- * ACP entrypoint to be drivable by one-agent without bespoke code.
- *
- * Flow: initialize -> session/new -> session/prompt, translating the agent's
- * `session/update` notifications into normalized events. Client-side methods
- * (fs access, permission) are answered with conservative defaults for now.
+ * JSON-RPC 2.0 over stdio. Naturally multi-turn: one `session/new` followed by
+ * many `session/prompt` calls on a single live process.
  */
 export class AcpAdapter implements AgentAdapter {
   readonly type = 'acp';
@@ -22,56 +25,71 @@ export class AcpAdapter implements AgentAdapter {
       : { available: false, reason: `"${descriptor.command}" not found on PATH` };
   }
 
-  async *run(
-    descriptor: AgentDescriptor,
-    request: RunRequest,
-    hooks: RunHooks,
-  ): AsyncIterable<AgentEvent> {
+  async openSession(descriptor: AgentDescriptor, opts: SessionOpts): Promise<AgentSession> {
     const child = spawn(descriptor.command, descriptor.args ?? [], {
-      cwd: request.cwd,
+      cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...descriptor.env },
     });
-    killOnAbort(hooks.signal, child);
+    const session = new AcpSession(child, opts);
+    await session.initialize();
+    return session;
+  }
+}
 
-    const conn = new JsonRpcConnection(child);
+class AcpSession implements AgentSession {
+  sessionId: string | undefined;
+  private readonly conn: JsonRpcConnection;
+  private hooks: RunHooks = {};
+  private closed = false;
+
+  constructor(
+    private readonly child: ChildProcessWithoutNullStreams,
+    private readonly opts: SessionOpts,
+  ) {
+    this.conn = new JsonRpcConnection(child);
+    this.conn.onRequest = (method, params) =>
+      handleClientRequest(method, params as Record<string, unknown>, this.hooks);
+  }
+
+  async initialize(): Promise<void> {
+    await this.conn.request('initialize', {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+    });
+    const res = (await this.conn.request('session/new', {
+      cwd: this.opts.cwd,
+      mcpServers: this.opts.mcpServers ?? [],
+    })) as { sessionId?: string };
+    this.sessionId = res.sessionId;
+  }
+
+  async *send(input: TurnInput, hooks: RunHooks): AsyncIterable<AgentEvent> {
+    this.hooks = hooks;
     const queue = new EventQueue();
+    if (this.sessionId) queue.push({ kind: 'session', sessionId: this.sessionId });
 
-    // On cancellation, reject any in-flight JSON-RPC call so the driver below
-    // unwinds promptly instead of awaiting a response the killed agent won't send.
-    const onAbort = () => conn.dispose(new Error('run aborted'));
-    if (hooks.signal) {
-      if (hooks.signal.aborted) onAbort();
-      else hooks.signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    conn.onNotification = (method, params) => {
+    this.conn.onNotification = (method, params) => {
       if (method === 'session/update') {
         const event = translateUpdate(params as Record<string, unknown>);
         if (event) queue.push(event);
       }
     };
-    conn.onRequest = async (method, params) => {
-      return handleClientRequest(method, params as Record<string, unknown>, hooks);
-    };
 
-    (async () => {
+    const onAbort = (): void => this.interrupt();
+    if (hooks.signal) {
+      if (hooks.signal.aborted) onAbort();
+      else hooks.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const promptText = this.opts.systemConvention
+      ? `<orchestration-context>\n${this.opts.systemConvention}\n</orchestration-context>\n\n${input.prompt}`
+      : input.prompt;
+
+    void (async () => {
       try {
-        await conn.request('initialize', {
-          protocolVersion: 1,
-          clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
-        });
-        const session = (await conn.request('session/new', {
-          cwd: request.cwd,
-          mcpServers: request.mcpServers ?? [],
-        })) as { sessionId?: string };
-        if (session.sessionId) queue.push({ kind: 'session', sessionId: session.sessionId });
-
-        const promptText = request.systemConvention
-          ? `<orchestration-context>\n${request.systemConvention}\n</orchestration-context>\n\n${request.prompt}`
-          : request.prompt;
-        const result = (await conn.request('session/prompt', {
-          sessionId: session.sessionId,
+        const result = (await this.conn.request('session/prompt', {
+          sessionId: this.sessionId,
           prompt: [{ type: 'text', text: promptText }],
         })) as { stopReason?: string };
         queue.push({ kind: 'done', result: result.stopReason });
@@ -80,11 +98,27 @@ export class AcpAdapter implements AgentAdapter {
         queue.push({ kind: 'done' });
       } finally {
         queue.close();
-        child.kill();
       }
     })();
 
-    yield* queue;
+    try {
+      yield* queue;
+    } finally {
+      hooks.signal?.removeEventListener('abort', onAbort);
+      this.conn.onNotification = undefined;
+    }
+  }
+
+  interrupt(): void {
+    // ACP cancellation: reject the in-flight prompt so the turn unwinds.
+    this.conn.dispose(new Error('turn interrupted'));
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.conn.dispose(new Error('session closed'));
+    this.child.kill('SIGTERM');
   }
 }
 
@@ -125,9 +159,7 @@ function contentText(content: unknown): string | undefined {
     const c = content as Record<string, unknown>;
     if (typeof c.text === 'string') return c.text;
   }
-  if (Array.isArray(content)) {
-    return content.map((c) => contentText(c) ?? '').join('');
-  }
+  if (Array.isArray(content)) return content.map((c) => contentText(c) ?? '').join('');
   return undefined;
 }
 
@@ -150,13 +182,9 @@ async function handleClientRequest(
       );
       return { outcome: { outcome: 'selected', optionId: pick?.optionId ?? options[0]?.optionId } };
     }
-    // Conservative default: allow once if any allow-option exists.
     const allow = options.find((o) => o.kind?.includes('allow'));
-    return {
-      outcome: { outcome: 'selected', optionId: allow?.optionId ?? options[0]?.optionId },
-    };
+    return { outcome: { outcome: 'selected', optionId: allow?.optionId ?? options[0]?.optionId } };
   }
-  // fs/read_text_file, fs/write_text_file, etc. left to extend.
   return {};
 }
 
@@ -183,16 +211,15 @@ class JsonRpcConnection {
     });
   }
 
-  private respond(id: unknown, result: unknown): void {
-    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
-  }
-
-  /** Reject all pending requests; used when the run is cancelled. */
   dispose(err: unknown): void {
     for (const [id, waiter] of this.pending) {
       this.pending.delete(id);
       waiter.reject(err);
     }
+  }
+
+  private respond(id: unknown, result: unknown): void {
+    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
   }
 
   private async readLoop(): Promise<void> {
@@ -216,36 +243,6 @@ class JsonRpcConnection {
       } else if (typeof msg.method === 'string') {
         this.onNotification?.(msg.method, msg.params);
       }
-    }
-  }
-}
-
-/** Push-based async iterable so producers and the consumer can decouple. */
-class EventQueue implements AsyncIterable<AgentEvent> {
-  private readonly buffer: AgentEvent[] = [];
-  private resolver?: () => void;
-  private closed = false;
-
-  push(event: AgentEvent): void {
-    this.buffer.push(event);
-    this.resolver?.();
-    this.resolver = undefined;
-  }
-
-  close(): void {
-    this.closed = true;
-    this.resolver?.();
-    this.resolver = undefined;
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
-    while (true) {
-      if (this.buffer.length) {
-        yield this.buffer.shift()!;
-        continue;
-      }
-      if (this.closed) return;
-      await new Promise<void>((res) => (this.resolver = res));
     }
   }
 }
