@@ -68,18 +68,30 @@ export type AgentEvent =
   | { kind: 'error'; message: string; fatal: boolean }
   | { kind: 'done'; result?: string };
 
-/** Messages streamed from main to renderer on the 'run:event' channel. */
+/**
+ * Messages streamed from main to renderer on the 'run:event' channel. A
+ * conversation (= one request) has many turns; events carry both ids so the
+ * renderer attaches each event to the right turn bubble.
+ */
 export type RunEventMsg =
-  | { requestId: string; kind: 'routed'; agentId: string; reason: string }
-  | { requestId: string; kind: 'event'; event: AgentEvent }
-  | { requestId: string; kind: 'finished'; cancelled: boolean };
+  | { conversationId: string; turnId: string; kind: 'routed'; agentId: string; reason: string }
+  | { conversationId: string; turnId: string; kind: 'event'; event: AgentEvent }
+  | { conversationId: string; turnId: string; kind: 'finished'; cancelled: boolean };
 
-export interface StartRequestInput {
+export interface StartConversationInput {
   cwd: string;
   prompt: string;
   /** undefined or "auto" => auto-route. */
   agentId?: string;
   mode?: PermissionMode;
+  /** Renderer-generated id for the first turn (avoids an event race). */
+  turnId: string;
+}
+
+export interface SendMessageInput {
+  conversationId: string;
+  prompt: string;
+  turnId: string;
 }
 
 /** The API surface exposed on window.oneAgent via the preload bridge. */
@@ -89,8 +101,16 @@ export interface OneAgentAPI {
   listAgents(cwd: string): Promise<AgentInfo[]>;
   listRequests(): Promise<RequestSummary[]>;
   getRequest(id: string): Promise<RequestDetail | null>;
-  startRequest(input: StartRequestInput): Promise<{ requestId: string }>;
-  cancelRequest(requestId: string): Promise<void>;
+  /** Open a conversation with its first turn. Returns the conversation id. */
+  startConversation(
+    input: StartConversationInput,
+  ): Promise<{ conversationId: string; agentId: string; reason: string }>;
+  /** Send a follow-up turn in an existing conversation. */
+  sendMessage(input: SendMessageInput): Promise<void>;
+  /** Interrupt the in-flight turn (keeps the conversation open). */
+  cancelTurn(conversationId: string): Promise<void>;
+  /** End a conversation and release its agent process. */
+  closeConversation(conversationId: string): Promise<void>;
   onRunEvent(cb: (msg: RunEventMsg) => void): () => void;
 }
 
@@ -100,7 +120,9 @@ export const IPC = {
   listAgents: 'agents:list',
   listRequests: 'requests:list',
   getRequest: 'request:get',
-  startRequest: 'run:start',
-  cancelRequest: 'run:cancel',
+  startConversation: 'conversation:start',
+  sendMessage: 'conversation:send',
+  cancelTurn: 'conversation:cancel',
+  closeConversation: 'conversation:close',
   runEvent: 'run:event',
 } as const;

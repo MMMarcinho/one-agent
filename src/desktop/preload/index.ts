@@ -3,7 +3,8 @@ import {
   IPC,
   type OneAgentAPI,
   type RunEventMsg,
-  type StartRequestInput,
+  type SendMessageInput,
+  type StartConversationInput,
 } from '../shared/ipc.js';
 
 const api: OneAgentAPI = {
@@ -12,8 +13,11 @@ const api: OneAgentAPI = {
   listAgents: (cwd) => ipcRenderer.invoke(IPC.listAgents, cwd),
   listRequests: () => ipcRenderer.invoke(IPC.listRequests),
   getRequest: (id) => ipcRenderer.invoke(IPC.getRequest, id),
-  startRequest: (input: StartRequestInput) => ipcRenderer.invoke(IPC.startRequest, input),
-  cancelRequest: (requestId) => ipcRenderer.invoke(IPC.cancelRequest, requestId),
+  startConversation: (input: StartConversationInput) =>
+    ipcRenderer.invoke(IPC.startConversation, input),
+  sendMessage: (input: SendMessageInput) => ipcRenderer.invoke(IPC.sendMessage, input),
+  cancelTurn: (conversationId) => ipcRenderer.invoke(IPC.cancelTurn, conversationId),
+  closeConversation: (conversationId) => ipcRenderer.invoke(IPC.closeConversation, conversationId),
   onRunEvent: (cb: (msg: RunEventMsg) => void) => {
     const listener = (_e: unknown, msg: RunEventMsg): void => cb(msg);
     ipcRenderer.on(IPC.runEvent, listener);

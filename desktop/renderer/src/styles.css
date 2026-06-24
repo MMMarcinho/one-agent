@@ -257,6 +257,10 @@ body {
   padding: 3px 11px;
   text-transform: capitalize;
 }
+.header-cont {
+  color: var(--accent);
+  text-transform: none;
+}
 
 /* ---------- Transcript ---------- */
 .transcript {

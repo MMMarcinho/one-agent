@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
   AgentInfo,
   InitResult,
@@ -19,12 +19,18 @@ export function App() {
   const [activeAgent, setActiveAgent] = useState<string>('auto');
   const [turns, setTurns] = useState<Turn[]>([]);
   const [history, setHistory] = useState<RequestSummary[]>([]);
-  const [running, setRunning] = useState<string | null>(null);
+  const [running, setRunning] = useState<string | null>(null); // turnId
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
 
   const refreshHistory = useCallback(() => {
     window.oneAgent.listRequests().then(setHistory);
   }, []);
+
+  const endConversation = useCallback(() => {
+    if (conversationId) window.oneAgent.closeConversation(conversationId);
+    setConversationId(null);
+  }, [conversationId]);
 
   const loadDir = useCallback(
     async (dir?: string) => {
@@ -36,9 +42,7 @@ export function App() {
       const def = res.agents.find((a) => a.isDefault && a.available);
       const availableCount = res.agents.filter((a) => a.available).length;
       setActiveAgent(
-        res.routingAuto && availableCount > 1
-          ? 'auto'
-          : (def?.id ?? firstAvailable?.id ?? 'auto'),
+        res.routingAuto && availableCount > 1 ? 'auto' : (def?.id ?? firstAvailable?.id ?? 'auto'),
       );
       refreshHistory();
     },
@@ -49,12 +53,12 @@ export function App() {
     void loadDir();
   }, [loadDir]);
 
-  // Single subscription to streamed run events; dispatch by requestId.
+  // Single subscription to streamed run events; dispatch by turnId.
   useEffect(() => {
     return window.oneAgent.onRunEvent((msg: RunEventMsg) => {
       setTurns((prev) => applyEvent(prev, msg));
       if (msg.kind === 'finished') {
-        setRunning(null);
+        setRunning((r) => (r === msg.turnId ? null : r));
         refreshHistory();
       }
     });
@@ -63,35 +67,52 @@ export function App() {
   const pickDir = useCallback(async () => {
     const dir = await window.oneAgent.pickDirectory();
     if (dir) {
+      endConversation();
       setTurns([]);
+      setDetail(null);
       await loadDir(dir);
     }
-  }, [loadDir]);
+  }, [endConversation, loadDir]);
 
-  const viewRequest = useCallback(async (id: string) => {
-    setDetail(await window.oneAgent.getRequest(id));
-  }, []);
+  const selectAgent = useCallback(
+    (id: string) => {
+      if (id !== activeAgent) endConversation(); // a conversation is bound to one agent
+      setActiveAgent(id);
+    },
+    [activeAgent, endConversation],
+  );
+
+  const newChat = useCallback(() => {
+    endConversation();
+    setTurns([]);
+    setDetail(null);
+  }, [endConversation]);
 
   const send = useCallback(
     async (prompt: string) => {
+      const turnId = crypto.randomUUID();
       setDetail(null);
-      const { requestId } = await window.oneAgent.startRequest({
-        cwd,
-        prompt,
-        agentId: activeAgent,
-      });
-      setRunning(requestId);
-      setTurns((prev) => [
-        ...prev,
-        { requestId, prompt, agentId: undefined, reason: undefined, blocks: [], status: 'running' },
-      ]);
+      setRunning(turnId);
+      setTurns((prev) => [...prev, { turnId, prompt, blocks: [], status: 'running' }]);
+
+      if (conversationId) {
+        await window.oneAgent.sendMessage({ conversationId, prompt, turnId });
+      } else {
+        const res = await window.oneAgent.startConversation({
+          cwd,
+          prompt,
+          agentId: activeAgent,
+          turnId,
+        });
+        setConversationId(res.conversationId);
+      }
     },
-    [cwd, activeAgent],
+    [cwd, activeAgent, conversationId],
   );
 
   const stop = useCallback(() => {
-    if (running) window.oneAgent.cancelRequest(running);
-  }, [running]);
+    if (conversationId) window.oneAgent.cancelTurn(conversationId);
+  }, [conversationId]);
 
   return (
     <div className="app">
@@ -101,16 +122,13 @@ export function App() {
         agents={agents}
         activeAgent={activeAgent}
         onPickDir={pickDir}
-        onSelectAgent={setActiveAgent}
+        onSelectAgent={selectAgent}
         history={history}
-        onSelectRequest={viewRequest}
-        onNewChat={() => {
-          setTurns([]);
-          setDetail(null);
-        }}
+        onSelectRequest={(id) => window.oneAgent.getRequest(id).then(setDetail)}
+        onNewChat={newChat}
       />
       <main className="main">
-        <Header cwd={cwd} activeAgent={activeAgent} />
+        <Header cwd={cwd} activeAgent={activeAgent} continued={!!conversationId} />
         {detail ? (
           <RequestDetailView detail={detail} onClose={() => setDetail(null)} />
         ) : (
@@ -122,29 +140,42 @@ export function App() {
   );
 }
 
-function Header({ cwd, activeAgent }: { cwd: string; activeAgent: string }) {
+function Header({
+  cwd,
+  activeAgent,
+  continued,
+}: {
+  cwd: string;
+  activeAgent: string;
+  continued: boolean;
+}) {
   const folder = cwd.split('/').filter(Boolean).pop() ?? cwd;
   return (
     <header className="header">
       <div className="header-dir" title={cwd}>
         {folder || 'No directory'}
       </div>
-      <div className="header-agent">{activeAgent === 'auto' ? 'Auto' : activeAgent}</div>
+      <div className="header-agent">
+        {activeAgent === 'auto' ? 'Auto' : activeAgent}
+        {continued && <span className="header-cont" title="conversation in progress"> · live</span>}
+      </div>
     </header>
   );
 }
 
-/** Pure reducer: fold a streamed event into the matching turn. */
+/** Pure reducer: fold a streamed event into the matching turn (by turnId). */
 function applyEvent(turns: Turn[], msg: RunEventMsg): Turn[] {
   return turns.map((t) => {
-    if (t.requestId !== msg.requestId) return t;
+    if (t.turnId !== msg.turnId) return t;
     if (msg.kind === 'routed') {
       return { ...t, agentId: msg.agentId, reason: msg.reason };
     }
     if (msg.kind === 'finished') {
-      return { ...t, status: t.status === 'running' ? (msg.cancelled ? 'cancelled' : 'done') : t.status };
+      return {
+        ...t,
+        status: t.status === 'running' ? (msg.cancelled ? 'cancelled' : 'done') : t.status,
+      };
     }
-    // kind === 'event'
     const ev = msg.event;
     const blocks = [...t.blocks];
     switch (ev.kind) {
