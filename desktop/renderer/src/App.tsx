@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AgentInfo, InitResult, RequestSummary, RunEventMsg } from '@shared/ipc';
+import type {
+  AgentInfo,
+  InitResult,
+  RequestDetail,
+  RequestSummary,
+  RunEventMsg,
+} from '@shared/ipc';
 import type { Block, Turn } from './ui-types';
 import { Sidebar } from './components/Sidebar';
 import { Transcript } from './components/Transcript';
 import { Composer } from './components/Composer';
+import { RequestDetailView } from './components/RequestDetail';
 
 export function App() {
   const [init, setInit] = useState<InitResult | null>(null);
@@ -13,6 +20,7 @@ export function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [history, setHistory] = useState<RequestSummary[]>([]);
   const [running, setRunning] = useState<string | null>(null);
+  const [detail, setDetail] = useState<RequestDetail | null>(null);
 
   const refreshHistory = useCallback(() => {
     window.oneAgent.listRequests().then(setHistory);
@@ -60,8 +68,13 @@ export function App() {
     }
   }, [loadDir]);
 
+  const viewRequest = useCallback(async (id: string) => {
+    setDetail(await window.oneAgent.getRequest(id));
+  }, []);
+
   const send = useCallback(
     async (prompt: string) => {
+      setDetail(null);
       const { requestId } = await window.oneAgent.startRequest({
         cwd,
         prompt,
@@ -90,11 +103,19 @@ export function App() {
         onPickDir={pickDir}
         onSelectAgent={setActiveAgent}
         history={history}
-        onNewChat={() => setTurns([])}
+        onSelectRequest={viewRequest}
+        onNewChat={() => {
+          setTurns([]);
+          setDetail(null);
+        }}
       />
       <main className="main">
         <Header cwd={cwd} activeAgent={activeAgent} />
-        <Transcript turns={turns} />
+        {detail ? (
+          <RequestDetailView detail={detail} onClose={() => setDetail(null)} />
+        ) : (
+          <Transcript turns={turns} />
+        )}
         <Composer running={!!running} disabled={!cwd} onSend={send} onStop={stop} />
       </main>
     </div>

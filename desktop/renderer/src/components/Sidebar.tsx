@@ -8,6 +8,7 @@ interface Props {
   onPickDir: () => void;
   onSelectAgent: (id: string) => void;
   history: RequestSummary[];
+  onSelectRequest: (id: string) => void;
   onNewChat: () => void;
 }
 
@@ -19,6 +20,7 @@ export function Sidebar({
   onPickDir,
   onSelectAgent,
   history,
+  onSelectRequest,
   onNewChat,
 }: Props) {
   const folder = cwd.split('/').filter(Boolean).pop() ?? cwd;
@@ -76,9 +78,15 @@ export function Sidebar({
         {history.length === 0 && <div className="empty">No requests yet</div>}
         <ul className="history">
           {history.slice(0, 30).map((r) => (
-            <li key={r.id} className="history-item" title={r.title}>
-              <div className="history-title">{r.title}</div>
-              <div className="history-agents">{r.agents.join(' · ') || '—'}</div>
+            <li key={r.id}>
+              <button
+                className="history-item"
+                title={r.title}
+                onClick={() => onSelectRequest(r.id)}
+              >
+                <div className="history-title">{r.title}</div>
+                <div className="history-agents">{r.agents.join(' · ') || '—'}</div>
+              </button>
             </li>
           ))}
         </ul>
