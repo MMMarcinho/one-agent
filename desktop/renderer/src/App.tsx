@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentInfo,
   InitResult,
@@ -24,6 +24,7 @@ export function App() {
   const [running, setRunning] = useState<string | null>(null); // turnId
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
+  const localTurnIds = useRef(new Set<string>());
 
   const refreshProjects = useCallback(() => {
     window.oneAgent.listProjects().then(setProjects);
@@ -50,7 +51,11 @@ export function App() {
         res.routingAuto && availableCount > 1 ? 'auto' : (def?.id ?? firstAvailable?.id ?? 'auto'),
       );
       refreshProjects();
-      refreshHistory(res.project.id);
+      if (res.project) {
+        refreshHistory(res.project.id);
+      } else {
+        setHistory([]);
+      }
     },
     [refreshProjects, refreshHistory],
   );
@@ -62,6 +67,8 @@ export function App() {
   // Single subscription to streamed run events; dispatch by turnId.
   useEffect(() => {
     return window.oneAgent.onRunEvent((msg: RunEventMsg) => {
+      if (!localTurnIds.current.has(msg.turnId)) return;
+      if (conversationId && msg.conversationId !== conversationId) return;
       setTurns((prev) => applyEvent(prev, msg));
       if (msg.kind === 'finished') {
         setRunning((r) => (r === msg.turnId ? null : r));
@@ -69,11 +76,12 @@ export function App() {
         refreshProjects();
       }
     });
-  }, [refreshHistory, refreshProjects, project?.id]);
+  }, [conversationId, refreshHistory, refreshProjects, project?.id]);
 
   const switchProject = useCallback(
     async (path: string) => {
       endConversation();
+      localTurnIds.current.clear();
       setTurns([]);
       setDetail(null);
       await loadDir(path);
@@ -86,6 +94,17 @@ export function App() {
     if (dir) await switchProject(dir);
   }, [switchProject]);
 
+  const renameProject = useCallback(
+    async (id: string, alias: string) => {
+      const updated = await window.oneAgent.renameProject(id, alias);
+      if (!updated) return;
+      setProject((current) => (current?.id === id ? updated : current));
+      setProjects((current) => current.map((item) => (item.id === id ? updated : item)));
+      refreshProjects();
+    },
+    [refreshProjects],
+  );
+
   const selectAgent = useCallback(
     (id: string) => {
       if (id !== activeAgent) endConversation(); // a conversation is bound to one agent
@@ -96,6 +115,7 @@ export function App() {
 
   const newChat = useCallback(() => {
     endConversation();
+    localTurnIds.current.clear();
     setTurns([]);
     setDetail(null);
   }, [endConversation]);
@@ -104,21 +124,34 @@ export function App() {
     async (prompt: string) => {
       if (!project) return;
       const turnId = crypto.randomUUID();
+      localTurnIds.current.add(turnId);
       setDetail(null);
       setRunning(turnId);
       setTurns((prev) => [...prev, { turnId, prompt, blocks: [], status: 'running' }]);
 
-      if (conversationId) {
-        await window.oneAgent.sendMessage({ conversationId, prompt, turnId });
-      } else {
-        const res = await window.oneAgent.startConversation({
-          cwd: project.path,
-          projectId: project.id,
-          prompt,
-          agentId: activeAgent,
-          turnId,
-        });
-        setConversationId(res.conversationId);
+      try {
+        if (conversationId) {
+          await window.oneAgent.sendMessage({ conversationId, prompt, turnId });
+        } else {
+          const res = await window.oneAgent.startConversation({
+            cwd: project.path,
+            projectId: project.id,
+            prompt,
+            agentId: activeAgent,
+            turnId,
+          });
+          setConversationId(res.conversationId);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setRunning(null);
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.turnId === turnId
+              ? { ...t, status: 'error', blocks: [...t.blocks, { type: 'error', message }] }
+              : t,
+          ),
+        );
       }
     },
     [project, activeAgent, conversationId],
@@ -134,23 +167,30 @@ export function App() {
         project={project}
         projects={projects}
         specInfo={init}
-        agents={agents}
-        activeAgent={activeAgent}
         onPickDir={pickDir}
         onSelectProject={switchProject}
-        onSelectAgent={selectAgent}
+        onRenameProject={renameProject}
         history={history}
         onSelectRequest={(id) => window.oneAgent.getRequest(id).then(setDetail)}
         onNewChat={newChat}
       />
       <main className="main">
-        <Header project={project} activeAgent={activeAgent} continued={!!conversationId} />
+        <Header project={project} />
         {detail ? (
           <RequestDetailView detail={detail} onClose={() => setDetail(null)} />
         ) : (
           <Transcript turns={turns} />
         )}
-        <Composer running={!!running} disabled={!project} onSend={send} onStop={stop} />
+        <Composer
+          running={!!running}
+          disabled={!project}
+          agents={agents}
+          activeAgent={activeAgent}
+          onSelectAgent={selectAgent}
+          continued={!!conversationId}
+          onSend={send}
+          onStop={stop}
+        />
       </main>
     </div>
   );
@@ -158,26 +198,13 @@ export function App() {
 
 function Header({
   project,
-  activeAgent,
-  continued,
 }: {
   project: ProjectInfo | null;
-  activeAgent: string;
-  continued: boolean;
 }) {
   return (
     <header className="header">
       <div className="header-dir" title={project?.path}>
-        {project?.name ?? 'No project'}
-      </div>
-      <div className="header-agent">
-        {activeAgent === 'auto' ? 'Auto' : activeAgent}
-        {continued && (
-          <span className="header-cont" title="conversation in progress">
-            {' '}
-            · live
-          </span>
-        )}
+        {project?.alias ?? 'No project'}
       </div>
     </header>
   );

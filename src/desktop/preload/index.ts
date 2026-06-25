@@ -11,6 +11,7 @@ const api: OneAgentAPI = {
   init: (startDir) => ipcRenderer.invoke(IPC.init, startDir),
   pickDirectory: () => ipcRenderer.invoke(IPC.pickDirectory),
   listProjects: () => ipcRenderer.invoke(IPC.listProjects),
+  renameProject: (id, alias) => ipcRenderer.invoke(IPC.renameProject, id, alias),
   listAgents: (cwd) => ipcRenderer.invoke(IPC.listAgents, cwd),
   listRequests: (projectId) => ipcRenderer.invoke(IPC.listRequests, projectId),
   getRequest: (id) => ipcRenderer.invoke(IPC.getRequest, id),

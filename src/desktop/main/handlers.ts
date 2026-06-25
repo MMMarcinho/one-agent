@@ -2,10 +2,12 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { homedir } from 'node:os';
 import type { Conversation } from '../../core/conversation.js';
 import { bootstrap, type Bootstrapped } from '../../app.js';
+import type { ProjectRecord } from '../../core/session-store.js';
 import {
   IPC,
   type AgentInfo,
   type InitResult,
+  type ProjectInfo,
   type SendMessageInput,
   type StartConversationInput,
 } from '../shared/ipc.js';
@@ -55,14 +57,30 @@ async function agentInfos(boot: Bootstrapped): Promise<AgentInfo[]> {
   });
 }
 
+async function projectInfo(boot: Bootstrapped, project: ProjectRecord): Promise<ProjectInfo> {
+  return {
+    id: project.id,
+    path: project.path,
+    name: project.name,
+    alias: project.alias,
+    lastUsedAt: project.lastUsedAt,
+    lastSessionAt: await boot.store.latestSessionAtForProject(project.id),
+  };
+}
+
 export function registerIpc(): void {
   ipcMain.handle(IPC.init, async (_e, startDir?: string): Promise<InitResult> => {
-    const cwd = startDir || homedir();
+    const home = homedir();
+    const homeBoot = await bootFor(home);
+    const existingProject = startDir ? undefined : (await homeBoot.store.listProjects())[0];
+    const cwd = startDir || existingProject?.path || home;
     const boot = await bootFor(cwd);
-    const project = await boot.store.ensureProject(cwd);
+    const project = startDir
+      ? await boot.store.ensureProject(cwd)
+      : existingProject;
     return {
       cwd,
-      project: { id: project.id, path: project.path, name: project.name, lastUsedAt: project.lastUsedAt },
+      project: project ? await projectInfo(boot, project) : null,
       specPath: boot.specPath,
       conventionsPath: boot.conventionsPath,
       usingBuiltin: boot.usingBuiltin,
@@ -75,7 +93,16 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.listProjects, async () => {
     const boot = await bootFor(homedir());
     const projects = await boot.store.listProjects();
-    return projects.map((p) => ({ id: p.id, path: p.path, name: p.name, lastUsedAt: p.lastUsedAt }));
+    const infos = await Promise.all(projects.map((project) => projectInfo(boot, project)));
+    return infos.sort((a, b) =>
+      (b.lastSessionAt ?? b.lastUsedAt).localeCompare(a.lastSessionAt ?? a.lastUsedAt),
+    );
+  });
+
+  ipcMain.handle(IPC.renameProject, async (_e, id: string, alias: string) => {
+    const boot = await bootFor(homedir());
+    const project = await boot.store.updateProjectAlias(id, alias);
+    return project ? projectInfo(boot, project) : null;
   });
 
   ipcMain.handle(IPC.pickDirectory, async (): Promise<string | null> => {
@@ -95,14 +122,39 @@ export function registerIpc(): void {
     const out = [];
     for (const r of requests) {
       const runs = await boot.store.runsFor(r.id);
+      const endedOrStarted = runs
+        .map((x) => x.endedAt ?? x.startedAt)
+        .sort((a, b) => b.localeCompare(a))[0];
+      const byAgent = new Map<string, typeof runs>();
+      for (const run of runs) {
+        const bucket = byAgent.get(run.agentId) ?? [];
+        bucket.push(run);
+        byAgent.set(run.agentId, bucket);
+      }
+      const agentRuns = [...byAgent.entries()].map(([agentId, agentRunsForRequest]) => {
+        const latestAt =
+          agentRunsForRequest
+            .map((x) => x.endedAt ?? x.startedAt)
+            .sort((a, b) => b.localeCompare(a))[0] ?? r.createdAt;
+        return {
+          agentId,
+          latestAt,
+          statuses: [...new Set(agentRunsForRequest.map((x) => x.status))],
+          runCount: agentRunsForRequest.length,
+        };
+      });
       out.push({
         id: r.id,
         title: r.title,
         createdAt: r.createdAt,
+        latestAt: endedOrStarted ?? r.createdAt,
         agents: [...new Set(runs.map((x) => x.agentId))],
+        agentRuns,
+        statuses: [...new Set(runs.map((x) => x.status))],
+        runCount: runs.length,
       });
     }
-    return out;
+    return out.sort((a, b) => b.latestAt.localeCompare(a.latestAt));
   });
 
   ipcMain.handle(IPC.getRequest, async (_e, id: string) => {

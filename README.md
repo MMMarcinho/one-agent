@@ -24,7 +24,7 @@ tool's documented headless interface:
 | Backend | Mechanism |
 | --- | --- |
 | **Claude Code** | `claude -p --input-format stream-json --output-format stream-json` — prompt in / event stream out over stdio. |
-| **Codex** | `codex exec --json --sandbox <mode>` — headless run, tolerant JSON event parsing. |
+| **Codex** | Primary: `codex app-server` over localhost WebSocket JSON-RPC (`thread/start` + `turn/start`) for Codex-style persistent threads. Fallback: `codex exec --json --sandbox <mode> --skip-git-repo-check`. |
 | **Any ACP agent** | JSON-RPC 2.0 over stdio (`initialize` → `session/new` → `session/prompt`), translating `session/update` notifications. The long-tail, future-proof path. |
 
 Adding a backend means writing one adapter; nothing else changes.
@@ -79,10 +79,18 @@ delegation:
 ## Agents spawning agents
 
 When an agent runs and the spec permits delegation, one-agent injects its own
-**MCP server** into that agent. The agent then has `list_agents` and
-`spawn_agent` tools. Every `spawn_agent` call is re-checked against the spec
-(allowed target? within `maxDepth`?) before a sub-agent is launched. This is how
-"an agent decides to launch another agent" stays governed by your rules.
+**MCP server** into that agent. The agent then has:
+
+- `list_agents` to inspect allowed targets and their roles.
+- `spawn_agent` for a synchronous self-contained sub-task.
+- `start_session`, `send_session_message`, and `close_session` for a persistent
+  delegated conversation with another agent.
+- `list_sessions` and `read_session` to inspect recorded progress, summaries,
+  prompts, and event content from the current request.
+
+Every delegated call is re-checked against the spec (allowed target? within
+`maxDepth`?) before a sub-agent is launched. This is how "an agent decides to
+launch another agent" stays governed by your rules.
 
 ### Telling agents *when* to delegate — `ONE_AGENT.md`
 
@@ -176,12 +184,12 @@ npm run dist:mac         # package a .dmg (macOS only)
 
 ### Using the app
 
-1. **Pick a directory.** Use the **Change** button in the sidebar (top-left) and
+1. **Pick a directory.** Use the **Open** button in the sidebar's Projects area and
    choose your project folder. one-agent loads any `one-agent.yaml` and
    `ONE_AGENT.md` found there (or falls back to built-in defaults).
-2. **Choose an agent — or don't.** The sidebar lists every configured agent with
-   a live availability dot, plus **Auto**. Leave it on **Auto** to let one-agent
-   route each request to the best available agent; or click a specific agent to
+2. **Choose an agent — or don't.** The composer has a compact Agent picker with
+   every configured agent plus **Auto**. Leave it on **Auto** to let one-agent
+   route each request to the best available agent; or choose a specific agent to
    pin it.
 3. **Describe a task — and keep the conversation going.** Type in the composer
    and press **Enter** (Shift+Enter for a newline). Output streams into the
@@ -193,13 +201,15 @@ npm run dist:mac         # package a .dmg (macOS only)
 4. **Interrupt anytime.** While a request runs, the Send button becomes **Stop**
    — click it to cancel the current request without closing the app.
 5. **Review past work.** Each task you run is a **request (需求)** in the
-   sidebar's *Recent requests*. Click one to see every backend session it
-   spawned across agents — including sub-agents one agent delegated to, indented
-   under the agent that delegated them.
+   sidebar's *Sessions* list, grouped by agent and marked with status/run count.
+   A multi-agent request appears under each agent that ran part of it, with that
+   agent's own run count. Click one to see every backend session it spawned
+   across agents — including sub-agents one agent delegated to, indented under
+   the agent that delegated them.
 
-> Developed headless: the TypeScript (main/preload), renderer typecheck, and
-> Vite bundle all compile, but the GUI itself hasn't been launched here — run
-> `npm run desktop:dev` on your Mac to see it and report any style tweaks.
+> Verified locally with `npm run desktop:dev`: Vite serves the renderer and
+> Electron opens the desktop shell. Chromium may print harmless DevTools
+> Autofill warnings during development.
 
 ## Driving Claude Code
 
@@ -224,6 +234,18 @@ the desktop chat has real conversation continuity. The remaining cc-connect
 refinement not yet adopted is `--permission-prompt-tool stdio` for **interactive
 permission approval** in the UI (tracked on the roadmap).
 
+## Driving Codex
+
+The Codex adapter prefers `codex app-server` for the desktop app's long-lived
+project/session model. It starts a local WebSocket JSON-RPC server, initializes
+the experimental API, opens a Codex thread with `thread/start`, and sends turns
+with `turn/start`. Codex app-server notifications are normalized into the same
+assistant/thinking/tool/error/done event stream as other backends.
+
+If app-server is unavailable, one-agent falls back to
+`codex exec --json --sandbox <mode> --skip-git-repo-check`, which fixes local
+folder trust failures while preserving a working Codex path for older CLIs.
+
 ## CLI (optional)
 
 The same core is also usable from a terminal:
@@ -241,12 +263,13 @@ node dist/cli/index.js show <id>    # what one request spawned
 - [x] Auto-routing from spec rules (deterministic RuleRouter)
 - [x] Desktop app frontend (macOS, Electron) reusing the core
 - [x] Persistent multi-turn Claude Code / ACP sessions (chat continuity)
-- [ ] True persistent Codex sessions (`codex proto` / app server)
+- [x] True persistent Codex sessions via `codex app-server`
 - [ ] Interactive permission approval (`--permission-prompt-tool stdio` / MCP)
 - [ ] Model-assisted routing (pluggable Router)
 - [ ] ACP client `fs/*` methods and full permission flow
-- [ ] Codex `app_server` backend (drive a running Codex app)
-- [ ] Live transcript persistence per run (not just summaries)
+- [x] Codex app-server adapter with `thread/start`, `turn/start`, and `turn/interrupt`
+- [ ] Codex app-server steering/resume/read APIs (`turn/steer`, `thread/read`, `thread/turns/list`)
+- [x] Live transcript persistence per run (not just summaries)
 
 ## Acknowledgements
 

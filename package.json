@@ -58,16 +58,19 @@
     "productName": "one-agent",
     "files": [
       "dist/**/*",
+      "build/icon.*",
       "package.json"
     ],
     "directories": {
       "output": "release"
     },
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
       "target": [
         "dmg"
       ]
     }
-  }
+  },
+  "repository": "git@github.com:MMMarcinho/one-agent.git"
 }

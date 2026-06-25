@@ -1,20 +1,34 @@
-import { useState, type KeyboardEvent } from 'react';
+import { useMemo, useState, type KeyboardEvent } from 'react';
+import type { AgentInfo } from '@shared/ipc';
 
 interface Props {
   running: boolean;
   disabled: boolean;
-  onSend: (prompt: string) => void;
+  agents: AgentInfo[];
+  activeAgent: string;
+  onSelectAgent: (id: string) => void;
+  continued: boolean;
+  onSend: (prompt: string) => void | Promise<void>;
   onStop: () => void;
 }
 
-export function Composer({ running, disabled, onSend, onStop }: Props) {
+export function Composer({
+  running,
+  disabled,
+  agents,
+  activeAgent,
+  onSelectAgent,
+  continued,
+  onSend,
+  onStop,
+}: Props) {
   const [text, setText] = useState('');
 
   const submit = () => {
     const trimmed = text.trim();
     if (!trimmed || running) return;
-    onSend(trimmed);
     setText('');
+    void onSend(trimmed);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -26,24 +40,109 @@ export function Composer({ running, disabled, onSend, onStop }: Props) {
 
   return (
     <div className="composer">
-      <textarea
-        className="composer-input"
-        placeholder={disabled ? 'Choose a directory to begin…' : 'Describe a task…  (Enter to send, Shift+Enter for newline)'}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={onKeyDown}
-        disabled={disabled}
-        rows={1}
-      />
-      {running ? (
-        <button className="send stop" onClick={onStop}>
-          Stop
+      <div className="composer-shell">
+        <AgentPicker
+          agents={agents}
+          activeAgent={activeAgent}
+          onSelectAgent={onSelectAgent}
+          continued={continued}
+        />
+        <textarea
+          className="composer-input"
+          placeholder={disabled ? 'Choose a directory to begin…' : 'Ask one-agent to work on a task…'}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          disabled={disabled}
+          rows={1}
+        />
+        {running ? (
+          <button className="send stop" onClick={onStop} type="button">
+            Stop
+          </button>
+        ) : (
+          <button className="send" onClick={submit} disabled={disabled || !text.trim()} type="button">
+            Send
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AgentPicker({
+  agents,
+  activeAgent,
+  onSelectAgent,
+  continued,
+}: {
+  agents: AgentInfo[];
+  activeAgent: string;
+  onSelectAgent: (id: string) => void;
+  continued: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const availableCount = useMemo(() => agents.filter((a) => a.available).length, [agents]);
+  const active = activeAgent === 'auto' ? undefined : agents.find((a) => a.id === activeAgent);
+
+  return (
+    <div className="composer-agent">
+      <div className="agent-picker">
+        <button
+          className="agent-button"
+          onClick={() => setOpen((v) => !v)}
+          title="Choose agent for this message"
+          type="button"
+        >
+          <span className="agent-button-dot" />
+          <span>{activeAgent === 'auto' ? 'Auto' : activeAgent}</span>
         </button>
-      ) : (
-        <button className="send" onClick={submit} disabled={disabled || !text.trim()}>
-          Send
-        </button>
-      )}
+        {continued && (
+          <span className="composer-live" title="continuing the current conversation">
+            live
+          </span>
+        )}
+        {open && (
+          <div className="agent-popover">
+            <button
+              className={`agent-option${activeAgent === 'auto' ? ' active' : ''}`}
+              onClick={() => {
+                onSelectAgent('auto');
+                setOpen(false);
+              }}
+              disabled={availableCount === 0}
+              type="button"
+            >
+              <span className="agent-option-name">Auto</span>
+              <span className="agent-option-sub">{availableCount} available agents</span>
+            </button>
+            {agents.map((a) => (
+              <button
+                className={`agent-option${activeAgent === a.id ? ' active' : ''}`}
+                key={a.id}
+                onClick={() => {
+                  if (!a.available) return;
+                  onSelectAgent(a.id);
+                  setOpen(false);
+                }}
+                disabled={!a.available}
+                type="button"
+              >
+                <span className={`status-dot${a.available ? ' on' : ''}`} />
+                <span className="agent-option-copy">
+                  <span className="agent-option-name">{a.id}</span>
+                  <span className="agent-option-sub">
+                    {a.available ? (a.role ?? a.type) : (a.reason ?? 'unavailable')}
+                  </span>
+                </span>
+              </button>
+            ))}
+            {active?.canDelegateTo && active.canDelegateTo.length > 0 && (
+              <div className="agent-delegates">can delegate to {active.canDelegateTo.join(', ')}</div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

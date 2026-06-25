@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">one-agent icon</title>
+  <desc id="desc">A unified desktop entrypoint routing work from one project hub to multiple coding agents.</desc>
+  <defs>
+    <linearGradient id="plate" x1="160" y1="112" x2="864" y2="912" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#18212F"/>
+      <stop offset="0.52" stop-color="#263345"/>
+      <stop offset="1" stop-color="#101820"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="278" y1="250" x2="762" y2="794" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7DE3C2"/>
+      <stop offset="1" stop-color="#4AA7FF"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#071018" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="216" fill="url(#plate)"/>
+  <path
+    d="M288 306c0-31 25-56 56-56h336c31 0 56 25 56 56v412c0 31-25 56-56 56H344c-31 0-56-25-56-56V306Z"
+    fill="#F7FAF7"
+    opacity="0.96"
+    filter="url(#softShadow)"
+  />
+  <path d="M360 338h304" stroke="#C9D4D0" stroke-width="34" stroke-linecap="round"/>
+  <path d="M360 440h128" stroke="#C9D4D0" stroke-width="34" stroke-linecap="round"/>
+  <path d="M536 440h128" stroke="#C9D4D0" stroke-width="34" stroke-linecap="round"/>
+
+  <path
+    d="M512 470v102m0 0-116 90m116-90 116 90"
+    fill="none"
+    stroke="url(#mint)"
+    stroke-width="52"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="512" cy="470" r="72" fill="#101820"/>
+  <circle cx="512" cy="470" r="37" fill="url(#mint)"/>
+  <circle cx="396" cy="662" r="72" fill="#101820"/>
+  <circle cx="396" cy="662" r="34" fill="#7DE3C2"/>
+  <circle cx="628" cy="662" r="72" fill="#101820"/>
+  <circle cx="628" cy="662" r="34" fill="#4AA7FF"/>
+
+  <path
+    d="M386 820h252"
+    stroke="#7DE3C2"
+    stroke-width="42"
+    stroke-linecap="round"
+    opacity="0.9"
+  />
+</svg>

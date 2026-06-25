@@ -7,14 +7,10 @@ import type {
   TurnInput,
 } from '../core/adapter.js';
 import type { AgentDescriptor, AgentEvent, McpServerConfig, PermissionMode, RunHooks } from '../core/types.js';
+import { CodexAppServerSession } from './codex-app-server.js';
 import { captureOutput, killOnAbort, readLines, which } from './process-util.js';
 
-/**
- * Drives the Codex CLI. Codex `exec` is one-shot, so this is a pseudo-session:
- * each turn spawns `codex exec --json` afresh. The uniform AgentSession shape
- * keeps the orchestrator simple; true persistent multi-turn continuity would
- * use `codex proto` / the app server (tracked on the roadmap).
- */
+/** Drives Codex, preferring the app-server thread/turn API with exec fallback. */
 export class CodexAdapter implements AgentAdapter {
   readonly type = 'codex';
 
@@ -32,10 +28,25 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async openSession(descriptor: AgentDescriptor, opts: SessionOpts): Promise<AgentSession> {
+    if (
+      descriptor.env?.ONE_AGENT_CODEX_APP_SERVER !== '0' &&
+      process.env.ONE_AGENT_CODEX_APP_SERVER !== '0'
+    ) {
+      try {
+        return await CodexAppServerSession.open(descriptor, opts);
+      } catch {
+        // Codex app-server is still experimental; keep desktop conversations usable.
+      }
+    }
     return new CodexSession(descriptor, opts);
   }
 }
 
+/**
+ * Fallback Codex driver. `codex exec` is one-shot, so this is a pseudo-session:
+ * each turn spawns `codex exec --json` afresh. It remains useful on older Codex
+ * builds or Node/Electron runtimes without a WebSocket implementation.
+ */
 class CodexSession implements AgentSession {
   sessionId: string | undefined;
   private active?: ChildProcess;
@@ -97,6 +108,7 @@ function buildArgs(descriptor: AgentDescriptor, opts: SessionOpts, input: TurnIn
 
   const mode = opts.permissionMode ?? descriptor.permissionMode ?? 'acceptEdits';
   args.push('--sandbox', sandboxFor(mode));
+  args.push('--skip-git-repo-check');
 
   for (const override of mcpOverrides(opts.mcpServers)) {
     args.push('-c', override);
@@ -105,6 +117,14 @@ function buildArgs(descriptor: AgentDescriptor, opts: SessionOpts, input: TurnIn
   if (descriptor.args) args.push(...descriptor.args);
   args.push(withConvention(input.prompt, opts.systemConvention));
   return args;
+}
+
+export function codexArgsForTest(
+  descriptor: AgentDescriptor,
+  opts: SessionOpts,
+  input: TurnInput,
+): string[] {
+  return buildArgs(descriptor, opts, input);
 }
 
 function withConvention(prompt: string, convention?: string): string {

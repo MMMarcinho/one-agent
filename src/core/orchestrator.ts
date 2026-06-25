@@ -94,6 +94,8 @@ export class Orchestrator {
     cwd: string;
     requestId: string;
     permissionMode?: RunRequest['permissionMode'];
+    parent?: string;
+    depth?: number;
   }): Promise<Conversation> {
     const descriptor = this.registry.descriptor(this.spec, opts.agentId);
     const detection = await this.registry.detect(descriptor);
@@ -107,7 +109,10 @@ export class Orchestrator {
     });
     const adapter = this.registry.adapterFor(descriptor);
     const session = await adapter.openSession(descriptor, sessionOpts);
-    return new Conversation(session, opts.requestId, descriptor.id, this.options.store);
+    return new Conversation(session, opts.requestId, descriptor.id, this.options.store, {
+      parent: opts.parent ?? 'user',
+      depth: opts.depth ?? 0,
+    });
   }
 
   /**
@@ -161,6 +166,7 @@ export class Orchestrator {
         { prompt: request.prompt },
         hooks,
       )) {
+        await this.recordEvent(record, event);
         if (event.kind === 'session') await this.note(record, { sessionId: event.sessionId });
         if (event.kind === 'assistant') collected.push(event.text);
         if (event.kind === 'done' && event.result) collected.push(event.result);
@@ -198,6 +204,13 @@ export class Orchestrator {
     patch: Parameters<SessionStore['updateRun']>[1],
   ): Promise<void> {
     if (record && this.options.store) await this.options.store.updateRun(record, patch);
+  }
+
+  private async recordEvent(
+    record: RunRecord | undefined,
+    event: AgentEvent,
+  ): Promise<void> {
+    if (record && this.options.store) await this.options.store.appendRunEvent(record, event);
   }
 
   private async finish(

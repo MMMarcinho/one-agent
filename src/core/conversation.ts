@@ -14,6 +14,7 @@ export class Conversation {
     private readonly requestId: string,
     private readonly agentId: string,
     private readonly store?: SessionStore,
+    private readonly lineage: { parent: string; depth: number } = { parent: 'user', depth: 0 },
   ) {}
 
   get sessionId(): string | undefined {
@@ -27,6 +28,7 @@ export class Conversation {
     let fatal = false;
     try {
       for await (const event of this.session.send({ prompt }, hooks)) {
+        await this.recordEvent(record, event);
         if (event.kind === 'session') await this.patch(record, { sessionId: event.sessionId });
         if (event.kind === 'assistant') collected.push(event.text);
         if (event.kind === 'done' && event.result) collected.push(event.result);
@@ -52,8 +54,8 @@ export class Conversation {
     return this.store.startRun({
       requestId: this.requestId,
       agentId: this.agentId,
-      parent: 'user',
-      depth: 0,
+      parent: this.lineage.parent,
+      depth: this.lineage.depth,
       prompt,
     });
   }
@@ -63,6 +65,13 @@ export class Conversation {
     patch: Parameters<SessionStore['updateRun']>[1],
   ): Promise<void> {
     if (record && this.store) await this.store.updateRun(record, patch);
+  }
+
+  private async recordEvent(
+    record: RunRecord | undefined,
+    event: AgentEvent,
+  ): Promise<void> {
+    if (record && this.store) await this.store.appendRunEvent(record, event);
   }
 
   private async finish(

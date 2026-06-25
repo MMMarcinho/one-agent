@@ -15,8 +15,10 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
+import type { AgentEvent } from './types.js';
 
 export type RunStatus = 'running' | 'done' | 'error' | 'cancelled';
+const projectLocks = new Map<string, Promise<ProjectRecord>>();
 
 /**
  * A Project is anchored at a base directory (its "route") and owns every
@@ -29,6 +31,8 @@ export interface ProjectRecord {
   path: string;
   /** Display name (defaults to the directory's basename). */
   name: string;
+  /** User-editable short name shown in the desktop project switcher. */
+  alias: string;
   createdAt: string;
   lastUsedAt: string;
 }
@@ -60,6 +64,13 @@ export interface RunRecord {
   endedAt?: string;
   /** Short summary of the run's result/output. */
   resultSummary?: string;
+  /** Full normalized event transcript for later review and agent-to-agent inspection. */
+  events?: StoredRunEvent[];
+}
+
+export interface StoredRunEvent {
+  at: string;
+  event: AgentEvent;
 }
 
 export class SessionStore {
@@ -83,19 +94,33 @@ export class SessionStore {
 
   /** Find-or-create the project for a directory, touching its lastUsedAt. */
   async ensureProject(path: string): Promise<ProjectRecord> {
-    await this.ensure();
     const abs = resolve(path);
+    const lockKey = `${this.root}:${abs}`;
+    const locked = projectLocks.get(lockKey);
+    if (locked) return locked;
+    const pending = this.ensureProjectUnlocked(abs).finally(() => {
+      projectLocks.delete(lockKey);
+    });
+    projectLocks.set(lockKey, pending);
+    return pending;
+  }
+
+  private async ensureProjectUnlocked(abs: string): Promise<ProjectRecord> {
+    await this.ensure();
     const existing = (await this.listProjects()).find((p) => p.path === abs);
     const now = new Date().toISOString();
     if (existing) {
+      existing.alias ||= existing.name;
       existing.lastUsedAt = now;
       await this.writeProject(existing);
       return existing;
     }
+    const name = basename(abs) || abs;
     const record: ProjectRecord = {
       id: randomUUID(),
       path: abs,
-      name: basename(abs) || abs,
+      name,
+      alias: name,
       createdAt: now,
       lastUsedAt: now,
     };
@@ -109,17 +134,47 @@ export class SessionStore {
     const records: ProjectRecord[] = [];
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
-      records.push(JSON.parse(await readFile(join(this.projectsDir, file), 'utf8')));
+      records.push(normalizeProject(JSON.parse(await readFile(join(this.projectsDir, file), 'utf8'))));
     }
-    return records.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+    const seen = new Set<string>();
+    return records
+      .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
+      .filter((record) => {
+        if (seen.has(record.path)) return false;
+        seen.add(record.path);
+        return true;
+      });
   }
 
   async getProject(id: string): Promise<ProjectRecord | undefined> {
     try {
-      return JSON.parse(await readFile(join(this.projectsDir, `${id}.json`), 'utf8'));
+      return normalizeProject(JSON.parse(await readFile(join(this.projectsDir, `${id}.json`), 'utf8')));
     } catch {
       return undefined;
     }
+  }
+
+  async latestSessionAtForProject(projectId: string): Promise<string | undefined> {
+    const requests = await this.requestsForProject(projectId);
+    let latest: string | undefined;
+    for (const request of requests) {
+      const runs = await this.runsFor(request.id);
+      const runLatest = runs
+        .map((run) => run.endedAt ?? run.startedAt)
+        .sort((a, b) => b.localeCompare(a))[0];
+      const candidate = runLatest ?? request.createdAt;
+      if (!latest || candidate.localeCompare(latest) > 0) latest = candidate;
+    }
+    return latest;
+  }
+
+  async updateProjectAlias(id: string, alias: string): Promise<ProjectRecord | undefined> {
+    const project = await this.getProject(id);
+    if (!project) return undefined;
+    const trimmed = alias.trim();
+    project.alias = trimmed ? trimmed.slice(0, 80) : project.name;
+    await this.writeProject(project);
+    return project;
   }
 
   async createRequest(input: {
@@ -157,6 +212,7 @@ export class SessionStore {
       prompt: input.prompt,
       status: 'running',
       startedAt: new Date().toISOString(),
+      events: [],
     };
     await this.writeRun(record);
     return record;
@@ -167,6 +223,16 @@ export class SessionStore {
     patch: Partial<Pick<RunRecord, 'sessionId' | 'status' | 'resultSummary' | 'endedAt'>>,
   ): Promise<RunRecord> {
     Object.assign(record, patch);
+    await this.writeRun(record);
+    return record;
+  }
+
+  async appendRunEvent(record: RunRecord, event: AgentEvent): Promise<RunRecord> {
+    record.events ??= [];
+    record.events.push({
+      at: new Date().toISOString(),
+      event: sanitizeEvent(event),
+    });
     await this.writeRun(record);
     return record;
   }
@@ -239,4 +305,33 @@ export class SessionStore {
 function titleOf(prompt: string): string {
   const firstLine = prompt.split(/\r?\n/)[0]?.trim() ?? '';
   return firstLine.length > 80 ? firstLine.slice(0, 77) + '…' : firstLine || '(empty)';
+}
+
+function normalizeProject(raw: ProjectRecord): ProjectRecord {
+  return {
+    ...raw,
+    alias: raw.alias || raw.name,
+  };
+}
+
+function sanitizeEvent(event: AgentEvent): AgentEvent {
+  if (event.kind === 'tool-call') {
+    return { ...event, input: safeJson(event.input) };
+  }
+  if (event.kind === 'tool-result') {
+    return { ...event, output: safeJson(event.output) };
+  }
+  if (event.kind === 'permission-request') {
+    return { ...event, request: { ...event.request, input: safeJson(event.request.input) } };
+  }
+  return event;
+}
+
+function safeJson(value: unknown): unknown {
+  try {
+    JSON.stringify(value);
+    return value;
+  } catch {
+    return String(value);
+  }
 }

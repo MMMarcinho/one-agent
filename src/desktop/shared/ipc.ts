@@ -20,12 +20,15 @@ export interface ProjectInfo {
   id: string;
   path: string;
   name: string;
+  alias: string;
   lastUsedAt: string;
+  /** Latest request/run activity in this project. Not updated by opening the project. */
+  lastSessionAt?: string;
 }
 
 export interface InitResult {
   cwd: string;
-  project: ProjectInfo;
+  project: ProjectInfo | null;
   specPath?: string;
   conventionsPath?: string;
   usingBuiltin: boolean;
@@ -38,10 +41,21 @@ export interface RequestSummary {
   id: string;
   title: string;
   createdAt: string;
+  latestAt: string;
   agents: string[];
+  agentRuns: RequestAgentSummary[];
+  statuses: RunStatus[];
+  runCount: number;
 }
 
 export type RunStatus = 'running' | 'done' | 'error' | 'cancelled';
+
+export interface RequestAgentSummary {
+  agentId: string;
+  statuses: RunStatus[];
+  runCount: number;
+  latestAt: string;
+}
 
 export interface RunInfo {
   id: string;
@@ -49,10 +63,17 @@ export interface RunInfo {
   sessionId?: string;
   parent: string;
   depth: number;
+  prompt: string;
   status: RunStatus;
   startedAt: string;
   endedAt?: string;
   resultSummary?: string;
+  events?: StoredRunEventInfo[];
+}
+
+export interface StoredRunEventInfo {
+  at: string;
+  event: AgentEvent;
 }
 
 export interface RequestDetail {
@@ -110,6 +131,7 @@ export interface OneAgentAPI {
   pickDirectory(): Promise<string | null>;
   /** Projects (opened directories), most-recently-used first. */
   listProjects(): Promise<ProjectInfo[]>;
+  renameProject(id: string, alias: string): Promise<ProjectInfo | null>;
   listAgents(cwd: string): Promise<AgentInfo[]>;
   /** Requests (sessions) belonging to a project, newest first. */
   listRequests(projectId: string): Promise<RequestSummary[]>;
@@ -131,6 +153,7 @@ export const IPC = {
   init: 'app:init',
   pickDirectory: 'dialog:pickDirectory',
   listProjects: 'projects:list',
+  renameProject: 'project:rename',
   listAgents: 'agents:list',
   listRequests: 'requests:list',
   getRequest: 'request:get',
