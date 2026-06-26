@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { AgentInfo } from '@shared/ipc';
 
 interface Props {
@@ -23,6 +23,14 @@ export function Composer({
   onStop,
 }: Props) {
   const [text, setText] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [text]);
 
   const submit = () => {
     const trimmed = text.trim();
@@ -41,13 +49,8 @@ export function Composer({
   return (
     <div className="composer">
       <div className="composer-shell">
-        <AgentPicker
-          agents={agents}
-          activeAgent={activeAgent}
-          onSelectAgent={onSelectAgent}
-          continued={continued}
-        />
         <textarea
+          ref={textareaRef}
           className="composer-input"
           placeholder={disabled ? 'Choose a directory to begin…' : 'Ask one-agent to work on a task…'}
           value={text}
@@ -56,15 +59,32 @@ export function Composer({
           disabled={disabled}
           rows={1}
         />
-        {running ? (
-          <button className="send stop" onClick={onStop} type="button">
-            Stop
-          </button>
-        ) : (
-          <button className="send" onClick={submit} disabled={disabled || !text.trim()} type="button">
-            Send
-          </button>
-        )}
+        <div className="composer-bar">
+          <AgentPicker
+            agents={agents}
+            activeAgent={activeAgent}
+            onSelectAgent={onSelectAgent}
+            continued={continued}
+          />
+          <div className="composer-actions">
+            {running ? (
+              <button className="send stop" onClick={onStop} type="button" aria-label="Stop">
+                Stop
+              </button>
+            ) : (
+              <button
+                className="send"
+                onClick={submit}
+                disabled={disabled || !text.trim()}
+                type="button"
+                aria-label="Send"
+                title="Send"
+              >
+                ↑
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
