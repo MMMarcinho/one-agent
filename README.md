@@ -252,10 +252,10 @@ The same core is also usable from a terminal:
 
 ```bash
 npm run build
-node dist/cli/index.js              # interactive: pick dir, start a request
+node dist/cli/index.js
 node dist/cli/index.js run "…" -a codex
-node dist/cli/index.js requests     # review past requests
-node dist/cli/index.js show <id>    # what one request spawned
+node dist/cli/index.js requests
+node dist/cli/index.js show <id>
 ```
 
 ## Roadmap
