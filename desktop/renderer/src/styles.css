@@ -804,7 +804,7 @@ body {
   border: none;
   background: var(--accent);
   color: #fff;
-  border-radius: var(--radius-sm);
+  border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
